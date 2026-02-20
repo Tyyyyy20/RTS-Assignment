@@ -1,0 +1,10 @@
+[workspace]
+members = [
+    "shared_protocol",
+    "satellite_ocs",
+    "ground_control",
+] 
+
+resolver = "3" 
+
+
