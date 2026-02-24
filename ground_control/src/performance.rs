@@ -1168,7 +1168,6 @@ mod task4_perftracker_tests {
     }
 }
 
-/* 
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1257,4 +1256,3 @@ mod tests {
         assert!(stats.avg_uplink_interval_ms > 0.0, "should average intervals");
     }
 }
-*/

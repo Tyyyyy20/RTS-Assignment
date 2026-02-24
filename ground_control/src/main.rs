@@ -103,6 +103,8 @@ impl GroundControlSystem {
             let fault_tx_network = fault_tx.clone();
             let backlog_ctr = Arc::clone(&telemetry_backlog);
             let mut packet_count: u64 = 0;
+            // Track inter-arrival times for uplink jitter measurement (REQ 4.1, S.3)
+            let mut last_arrival: Option<std::time::Instant> = None;
 
             tokio::spawn(async move {
                 info!("Network reception task started");
@@ -215,6 +217,49 @@ impl GroundControlSystem {
                                     },
                                 }).await;
                             }
+
+                            // Uplink interval and jitter measurement (REQ 4.1, S.3)
+                            let now_instant = std::time::Instant::now();
+                            if let Some(prev) = last_arrival {
+                                let interval_ms = prev.elapsed().as_secs_f64() * 1000.0;
+                                // Expected interval based on packet type
+                                let expected_ms: f64 = match timing.packet_type.as_str() {
+                                    "heartbeat" => 1000.0,
+                                    "emergency" => 50.0,
+                                    "status"    => 500.0,
+                                    _           => 100.0, // telemetry default
+                                };
+                                let jitter_ms = (interval_ms - expected_ms).abs();
+                                let _ = performance_tx.send(PerformanceEvent {
+                                    timestamp: Utc::now(),
+                                    event_type: EventType::UplinkIntervalSample,
+                                    duration_ms: interval_ms,
+                                    metadata: {
+                                        let mut m = std::collections::HashMap::new();
+                                        m.insert("uplink_interval_ms".into(), format!("{:.3}", interval_ms));
+                                        m.insert("uplink_expected_ms".into(), format!("{:.3}", expected_ms));
+                                        m.insert("uplink_jitter_ms".into(), format!("{:.3}", jitter_ms));
+                                        m.insert("packet_type".into(), timing.packet_type.clone());
+                                        m.insert("packet_id".into(), timing.packet_id.clone());
+                                        m
+                                    },
+                                }).await;
+                                if jitter_ms > 25.0 {
+                                    let _ = performance_tx.send(PerformanceEvent {
+                                        timestamp: Utc::now(),
+                                        event_type: EventType::JitterViolation,
+                                        duration_ms: jitter_ms,
+                                        metadata: {
+                                            let mut m = std::collections::HashMap::new();
+                                            m.insert("jitter_ms".into(), format!("{:.3}", jitter_ms));
+                                            m.insert("interval_ms".into(), format!("{:.3}", interval_ms));
+                                            m.insert("expected_ms".into(), format!("{:.3}", expected_ms));
+                                            m
+                                        },
+                                    }).await;
+                                }
+                            }
+                            last_arrival = Some(now_instant);
 
                             packet_count += 1;
                             if packet_count % 50 == 0 {
@@ -490,6 +535,8 @@ impl GroundControlSystem {
                 while *is_running.lock().await {
                     itv.tick().await;
                     tick += 1;
+                    // Record tick start for scheduling drift measurement (REQ 4.1, S.1)
+                    let tick_start = std::time::Instant::now();
 
                     if tick % 2 == 0 {
                         let cmds = {
@@ -562,9 +609,14 @@ impl GroundControlSystem {
                     }
 
                     if tick % 1000 == 0 {
+                        // Pass current interlock state so scheduler can audit queue (REQ 2.3)
+                        let blocked = {
+                            let fm = fault_manager.lock().await;
+                            fm.get_blocked_command_types()
+                        };
                         let mut s = command_scheduler.lock().await;
                         s.cleanup_expired_commands().await;
-                        s.update_safety_validation_cache().await;
+                        s.update_safety_validation_cache(&blocked).await;
                     }
 
                     if tick % 20000 == 0 {
@@ -582,26 +634,86 @@ impl GroundControlSystem {
                         debug!("scheduler precision: 0.5ms; uptime {:.3}s", tick as f64 * 0.0005);
                     }
 
+                    // Measure and record task execution drift (REQ 4.1, S.1)
+                    let tick_elapsed_ms = tick_start.elapsed().as_secs_f64() * 1000.0;
+                    if tick_elapsed_ms > 0.5 {
+                        let event_type = if tick_elapsed_ms > 5.0 {
+                            EventType::SchedulerPrecisionViolation
+                        } else {
+                            EventType::TaskExecutionDrift
+                        };
+                        let _ = performance_tx.send(PerformanceEvent {
+                            timestamp: Utc::now(),
+                            event_type,
+                            duration_ms: tick_elapsed_ms,
+                            metadata: {
+                                let mut m = std::collections::HashMap::new();
+                                m.insert("tick".into(), tick.to_string());
+                                m.insert("budget_ms".into(), "0.5".into());
+                                m.insert("elapsed_ms".into(), format!("{:.4}", tick_elapsed_ms));
+                                m.insert("overshoot_ms".into(), format!("{:.4}", tick_elapsed_ms - 0.5));
+                                m.insert("severity".into(), if tick_elapsed_ms > 5.0 { "critical" } else { "warning" }.into());
+                                m
+                            },
+                        }).await;
+                    }
+
                     if tick % 100 == 0 { tokio::task::yield_now().await; }
                 }
             })
         };
 
-        // Task 8: Simulation – inject an emergency packet periodically
+        // Task 8: Simulation – inject fault packets periodically (REQ 3.1)
+        // Rotates: random → thermal sequence → cascading failure → repeat
         let _fault_simulator_task = {
             let telemetry_tx_sim = telemetry_tx.clone();
             tokio::spawn(async move {
                 let mut fault_simulator = FaultSimulator::new();
                 let mut itv = tokio::time::interval(Duration::from_secs(45));
+                let mut sim_cycle: u64 = 0;
                 loop {
                     itv.tick().await;
-                    let emergency = fault_simulator.create_random_fault();
-                    let packet = fault_simulator.create_fault_packet(emergency);
-                    let now = Utc::now();
-                    if let Err(e) = telemetry_tx_sim.send((packet, now)).await {
-                        error!("Failed to inject simulated fault packet: {e}");
-                    } else {
-                        info!("SIM: injected EmergencyAlert into telemetry path");
+                    let cycle = sim_cycle % 3;
+                    sim_cycle += 1;
+
+                    match cycle {
+                        0 => {
+                            // Scenario A: single random fault
+                            let emergency = fault_simulator.create_random_fault();
+                            let packet = fault_simulator.create_fault_packet(emergency);
+                            let now = Utc::now();
+                            if let Err(e) = telemetry_tx_sim.send((packet, now)).await {
+                                error!("SIM: failed to inject random fault: {e}");
+                            } else {
+                                info!("SIM [cycle {}]: injected random EmergencyAlert", sim_cycle);
+                            }
+                        }
+                        1 => {
+                            // Scenario B: escalating thermal fault sequence
+                            info!("SIM [cycle {}]: injecting thermal escalation sequence (3 packets)", sim_cycle);
+                            for fault in fault_simulator.create_thermal_fault_sequence() {
+                                let packet = fault_simulator.create_fault_packet(fault);
+                                let now = Utc::now();
+                                if let Err(e) = telemetry_tx_sim.send((packet, now)).await {
+                                    error!("SIM: thermal sequence send failed: {e}");
+                                    break;
+                                }
+                                tokio::time::sleep(Duration::from_millis(200)).await;
+                            }
+                        }
+                        _ => {
+                            // Scenario C: multi-system cascading failure sequence
+                            info!("SIM [cycle {}]: injecting cascading failure sequence (5 packets)", sim_cycle);
+                            for fault in fault_simulator.create_cascading_failure_sequence() {
+                                let packet = fault_simulator.create_fault_packet(fault);
+                                let now = Utc::now();
+                                if let Err(e) = telemetry_tx_sim.send((packet, now)).await {
+                                    error!("SIM: cascade sequence send failed: {e}");
+                                    break;
+                                }
+                                tokio::time::sleep(Duration::from_millis(300)).await;
+                            }
+                        }
                     }
                 }
             })
@@ -665,7 +777,52 @@ impl GroundControlSystem {
         info!("Retransmissions: {}", final_stats.retransmission_requests);
         info!("Network timeouts: {}", final_stats.network_timeouts);
         info!("Faults handled: {} | Critical active: {}", fault_stats.total_faults_detected, fault_stats.active_faults_count);
-        info!("System health score: {:.1}/100 | Uptime {:.2}%", final_stats.system_health_score, final_stats.uptime_percentage);
+        info!("--- Fault Recovery Metrics (REQ 4.2, S.4) ---");
+        info!("MTTR avg: {:.1}ms | MTBF avg: {:.1}ms", fault_stats.mttr_avg_ms, fault_stats.mtbf_avg_ms);
+        info!("Auto recovery: {}/{} succeeded | Manual recoveries: {}",
+              fault_stats.auto_recovery_successes, fault_stats.auto_recovery_attempts,
+              fault_stats.manual_recoveries);
+        info!("Interlocks: activated={} released={} avg_active={:.1}ms",
+              fault_stats.total_interlocks_activated,
+              fault_stats.interlock_releases,
+              if fault_stats.interlock_releases > 0 {
+                  fault_stats.interlock_total_active_ms / fault_stats.interlock_releases as f64
+              } else { 0.0 });
+        info!("Interlock latency: avg={:.3}ms max={:.3}ms | Violations: {}",
+              fault_stats.interlock_avg_activation_latency_ms,
+              fault_stats.interlock_max_activation_latency_ms,
+              fault_stats.recent_latency_violations);
+        info!("Commands blocked by interlocks: {}", fault_stats.total_commands_blocked);
+        info!("Loss-of-contact events: {} | Total LoC duration: {:.1}ms",
+              fault_stats.loc_events, fault_stats.loc_total_duration_ms);
+        info!("--- Uplink Jitter (REQ 4.1, S.3) ---");
+        info!("Jitter p95={:.3}ms p99={:.3}ms max={:.3}ms | Avg interval={:.1}ms",
+              final_stats.p95_uplink_jitter_ms, final_stats.p99_uplink_jitter_ms,
+              final_stats.max_uplink_jitter_ms, final_stats.avg_uplink_interval_ms);
+        info!("--- Task Execution Drift (REQ 4.1, S.1) ---");
+        info!("Drift avg={:.3}ms max={:.3}ms p95={:.3}ms p99={:.3}ms",
+              final_stats.avg_task_drift_ms, final_stats.max_task_drift_ms,
+              final_stats.p95_task_drift_ms, final_stats.p99_task_drift_ms);
+        info!("System health score: {:.1}/100 | Uptime {:.2}%",
+              final_stats.system_health_score, final_stats.uptime_percentage);
+        // Command rejection log summary (REQ 3.4)
+        drop(perf); // release performance_tracker lock before taking fault_manager lock
+        let fm_lock = self.fault_manager.lock().await;
+        let rejections = fm_lock.get_command_rejection_log();
+        if rejections.is_empty() {
+            info!("Command rejection log: no commands were blocked this session");
+        } else {
+            info!("--- Command Rejection Log ({} total, REQ 3.4) ---", rejections.len());
+            for ev in rejections.iter().rev().take(10) {
+                info!("  BLOCKED cmd={} type={} interlock={} F->I={:.3}ms I->B={:.3}ms total={:.3}ms",
+                      ev.command_id, ev.command_type, ev.blocking_interlock_id,
+                      ev.fault_to_interlock_latency_ms, ev.interlock_to_block_latency_ms,
+                      ev.total_fault_to_block_latency_ms);
+            }
+            if rejections.len() > 10 {
+                info!("  ... and {} more rejections", rejections.len() - 10);
+            }
+        }
     }
 }
 

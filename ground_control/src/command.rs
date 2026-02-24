@@ -63,6 +63,12 @@ pub struct CommandScheduler {
     network_violations: u64,
     deadline_violations: u64,
     total_urgent: u64,
+    /// Cache of blocked command types from active safety interlocks — REQ 2.3
+    cached_blocked_types: Vec<String>,
+    /// Timestamp of last safety cache refresh
+    last_cache_update: Option<DateTime<Utc>>,
+    /// Count of commands pre-rejected during cache audits
+    pre_rejected_count: u64,
 }
 
 impl CommandScheduler {
@@ -75,6 +81,9 @@ impl CommandScheduler {
             network_violations: 0,
             deadline_violations: 0,
             total_urgent: 0,
+            cached_blocked_types: Vec::new(),
+            last_cache_update: None,
+            pre_rejected_count: 0,
         }
     }
 
@@ -280,9 +289,47 @@ impl CommandScheduler {
         }
     }
 
-    pub async fn update_safety_validation_cache(&mut self) { 
-        // Hook for future safety validation implementation
-        // This could validate command parameters, check system states, etc.
+    /// Update the blocked-command-types cache from current interlock state and audit
+    /// the pending queue, logging any commands that would be rejected — REQ 2.3
+    pub async fn update_safety_validation_cache(&mut self, currently_blocked: &[String]) {
+        self.cached_blocked_types = currently_blocked.to_vec();
+        self.last_cache_update = Some(Utc::now());
+
+        if currently_blocked.is_empty() {
+            return;
+        }
+
+        // Audit the pending queue: log every command that would be blocked by
+        // a current interlock so the rejection reason is documented (REQ 2.3, 3.4).
+        let mut pre_rejected = 0u64;
+        for scheduled in &self.queue {
+            let cmd_type = format!("{:?}", scheduled.command.command_type).to_lowercase();
+            let target   = format!("{:?}", scheduled.command.target_system).to_lowercase();
+            let blocked_by: Vec<&str> = currently_blocked
+                .iter()
+                .filter(|b| cmd_type.contains(b.as_str()) || target.contains(b.as_str()))
+                .map(|b| b.as_str())
+                .collect();
+            if !blocked_by.is_empty() {
+                warn!(
+                    "[SAFETY AUDIT] Queued command {} ({:?} → {:?}) will be BLOCKED by interlock rules: {:?}",
+                    scheduled.command.command_id,
+                    scheduled.command.command_type,
+                    scheduled.command.target_system,
+                    blocked_by
+                );
+                pre_rejected += 1;
+            }
+        }
+
+        if pre_rejected > 0 {
+            self.pre_rejected_count += pre_rejected;
+            warn!(
+                "[SAFETY AUDIT] {} queued command(s) will be blocked by active interlocks \
+                 (total pre-rejected: {})",
+                pre_rejected, self.pre_rejected_count
+            );
+        }
     }
 
     pub fn schedule_command(&mut self, command: Command) -> Result<String> {

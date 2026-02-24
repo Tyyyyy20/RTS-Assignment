@@ -910,6 +910,19 @@ impl FaultManager {
         }
     }
 
+    /// All command block events (up to 500 most recent) — REQ 3.4
+    pub fn get_command_rejection_log(&self) -> &[CommandBlockEvent] {
+        &self.command_block_events
+    }
+
+    /// Flat list of all command types currently blocked by any active interlock — REQ 2.3
+    pub fn get_blocked_command_types(&self) -> Vec<String> {
+        self.safety_interlocks
+            .values()
+            .flat_map(|i| i.blocked_command_types.iter().cloned())
+            .collect()
+    }
+
     fn push_bounded(buf: &mut Vec<f64>, v: f64, max_len: usize) {
         buf.push(v);
         if buf.len() > max_len { buf.remove(0); }
