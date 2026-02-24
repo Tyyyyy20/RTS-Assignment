@@ -193,6 +193,30 @@ pub async fn log_fault_recovery(
     let _ = g.flush().await;
 } 
 
+static COMMANDS: OnceCell<Arc<Mutex<BufWriter<tokio::fs::File>>>> = OnceCell::const_new();
+
+/// commands.csv: ts,command_id,command_type,target_system,execution_time_ms,status
+pub async fn log_command(
+    command_id: &str,
+    command_type: &str,
+    target_system: &str,
+    execution_time_ms: f64,
+    status: &str,
+) {
+    let ts = Utc::now().to_rfc3339();
+    let line = format!(
+        "{ts},{command_id},{command_type},{target_system},{execution_time_ms:.3},{status}\n"
+    );
+    let file = get_file(
+        &COMMANDS,
+        "logs/commands.csv",
+        "ts,command_id,command_type,target_system,execution_time_ms,status\n",
+    ).await;
+    let mut f = file.lock().await;
+    let _ = f.write_all(line.as_bytes()).await;
+    let _ = f.flush().await;
+}
+
 // txqueue.csv: ts,oldest_ms,fill_pct
 pub async fn log_tx_queue(oldest_ms: f64, fill_pct: f64) {
     use tokio::sync::OnceCell;

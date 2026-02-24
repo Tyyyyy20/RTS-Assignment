@@ -1,0 +1,594 @@
+Realtime Systems - CT087-3-3 
+
+                Asia Pacific University of Technology & Innovation 
+
+     Level 3 
+
+CT087-3-3-RTS Realtime Systems 
+
+Objective: 
+
+This  assignment  is  mainly  for  students  to  analyse,  design,  implement,  and  evaluate  a  simulated  real-time 
+system using the Rust programming environment. 
+
+Learning Outcomes 
+
+ON COMPLETION OF THIS ASSIGNMENT YOU SHOULD BE ABLE TO DEMONSTRATE THE FOLLOWING LEARNING 
+OUTCOME(S):  
+
+No. 
+1 
+
+2 
+
+3 
+
+Learning Outcome 
+
+Discuss typical real-time systems, their requirements for 
+asynchronous operation, concurrency and robustness. (C2, PL01) 
+Design systematic approaches for the conceptualisation, 
+specification and design of real-time systems. (C5, PL02) 
+Verify appropriate real-time systems scheduling techniques. (A5, 
+PL09) 
+
+Assessment 
+Test 
+
+Individual Assignment 
+(Simulation) 
+Individual Assignment 
+(Research Paper) 
+
+Programme Outcomes (PO): 
+
+PLO2 - Cognitive skills 
+
+Cognitive skills relate to thinking or intellectual capabilities and the ability to apply knowledge and skills to 
+solve problems. 
+
+Assignment – Simulation (40%): 
+
+Section 
+
+Topic 
+
+Question Vs Taxonomy 
+
+Affective Level 
+
+1 
+
+2 
+
+3 
+
+4 
+
+SQ 
+
+SQ 
+
+SQ 
+
+SQ 
+
+5 
+
+SQ 
+
+PLO 
+
+1 
+
+2 
+
+3 
+
+4 
+
+5 
+
+Correctness and Functionality 
+         ◦  Do  the  components  meet  their  functional 
+requirements? 
+        ◦  Does  the  system  handle  real-time  constraints 
+effectively? 
+Code Quality and Use of Rust 
+        ◦  Is  the  code  modular,  efficient,  and  idiomatic  in 
+Rust? 
+        ◦  Are  concurrency  and  safety  features  properly 
+implemented? 
+Appropriateness  of  the  design 
+scenario requirements 
+Integration and Communication 
+Do  the  components  integrate  seamlessly,  and  is  data 
+exchanged correctly in real time? 
+Presentation 
+
+in  addressing  the 
+
+Total 
+
+2 
+
+2 
+
+2 
+
+2 
+
+2 
+
+35% 
+
+25% 
+
+20% 
+
+10% 
+
+10% 
+
+100% 
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+Realtime Systems - CT087-3-3 
+
+                Asia Pacific University of Technology & Innovation 
+
+     Level 3 
+
+PLO9 - Personal skills 
+
+Personal skills generally refer to the ability to engage effectively in self-directed lifelong learning and 
+professional pathways. 
+
+Individual Assignment - Report(20%): 
+
+Question Vs Taxonomy 
+
+Affective Level 
+
+1 
+
+2 
+
+SQ 
+
+SQ 
+
+3 
+
+SQ 
+
+4 
+
+SQ 
+
+PLO 
+
+9 
+
+9 
+
+9 
+
+9 
+9 
+
+5 
+
+SQ 
+
+10% 
+
+20% 
+
+30% 
+
+30% 
+10% 
+100
+% 
+
+Section 
+
+Topic 
+
+1 
+
+2 
+
+3 
+5 
+6 
+
+Introduction and background 
+
+Related Work 
+
+Design 
+
+Results and Discussion 
+References 
+
+Total 
+
+Submission Requirements 
+
+Assignment Handout Date 
+
+: 18th December 2025 
+
+Assignment Due Date 
+
+: 13th March 2026 
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+   
+ 
+Realtime Systems - CT087-3-3 
+
+                Asia Pacific University of Technology & Innovation 
+
+     Level 3 
+
+Individual Assignment – 2511CS/CS-DA 
+
+Assignment Scenario 
+
+Assignment Title:  Satellite-Ground Control Real-Time System Simulation in Rust 
+
+Weightage: Simulation (40%), Individual Report (20%) 
+
+Delivery Mode: Individual submission, within a collaborative simulation context 
+
+Objective 
+
+This  assignment  simulates  real-time  coordination  between  a  CubeSat  in  low  Earth  orbit  and  a  Ground  Control  Station 
+(GCS).  Students  will  design  and  implement  one  component  of  this  system  using  Rust,  with  strict  real-time  constraints 
+including deadlines, latency, jitter, safety, scheduling drift, and fault handling. 
+
+Each student is assigned a role: 
+
+•  Student A: Satellite Onboard Control System (OCS) 
+
+•  Student B: Ground Control Station (GCS) 
+
+Together,  both  components  form  a  distributed  system  where  correctness,  safety,  efficiency,  and  performance  must  be 
+demonstrated. 
+
+Learning Outcomes 
+
+On completion of this assignment, students will be able to: 
+
+1.  Discuss real-time systems, their constraints, and key attributes like concurrency and robustness. (LO1) 
+
+2.  Design systematic and schedulable real-time systems for safety-critical contexts. (LO2) 
+
+3.  Verify real-time scheduling techniques and evaluate system performance under load. (LO3) 
+
+Assignment Components 
+
+Student A: Satellite Onboard Control System (OCS) 
+
+1. Sensor Data Acquisition and Prioritization 
+
+•  Simulate three onboard sensors with distinct intervals and priorities. 
+
+•  Ensure jitter is <1ms for critical sensors. 
+
+•  Prioritize  sensor  data  in  a  bounded  buffer.  When  full,  simulate  data  loss  and  log  dropped  samples  with 
+
+timestamps. 
+
+•  Measure scheduling drift by comparing expected vs actual task start times. 
+
+•  Track latency from sensor read to buffer insertion. 
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+Realtime Systems - CT087-3-3 
+
+                Asia Pacific University of Technology & Innovation 
+
+     Level 3 
+
+• 
+
+If critical data (e.g. thermal) is missed for >3 consecutive cycles, raise a simulated safety alert. 
+
+2. Real-Time Task Scheduling 
+
+•  Schedule and prioritize tasks: data compression, health monitoring, and antenna alignment. 
+
+• 
+
+Implement scheduling using real-time strategies (e.g., Rate Monotonic or EDF). 
+
+•  Support preemption: thermal control must override lower-priority tasks. 
+
+•  Log all deadline violations (start delay or completion delay). 
+
+•  Measure and report scheduling drift and task execution jitter. 
+
+•  Log CPU utilization: % active time vs idle time. 
+
+3. Downlink Data Management 
+
+•  Compress and packetize data for transmission. 
+
+•  Prepare data for downlink within 30ms of visibility window. 
+
+•  Log transmission queue latency and buffer fill rates. 
+
+• 
+
+If downlink not initialized within 5ms, simulate missed communication. 
+
+•  Trigger degraded mode if buffer exceeds 80%. 
+
+4. Benchmarking and Fault Simulation 
+
+• 
+
+Inject faults (e.g., delayed or corrupted sensor data) every 60s. 
+
+•  Log all faults and responses. 
+
+•  Evaluate: jitter, drift, deadline adherence, fault recovery time, and CPU utilization. 
+
+•  Recovery time must be <200ms, else simulate mission abort. 
+
+Student B: Ground Control Station (GCS) 
+
+1. Telemetry Reception and Decoding 
+
+•  Receive telemetry via IPC or sockets, decode within 3ms. 
+
+•  Log packet reception latency and reception drift (actual vs expected arrival). 
+
+•  Trigger re-requests on missing/delayed packets. 
+
+•  Simulate “loss of contact” if ≥3 packets fail in sequence. 
+
+2. Command Uplink Scheduler 
+
+•  Maintain a real-time command schedule. 
+
+•  Enforce deadlines for urgent commands (≤2ms dispatch). 
+
+•  Validate commands against system state using safety interlocks. 
+
+ 
+ 
+Realtime Systems - CT087-3-3 
+
+                Asia Pacific University of Technology & Innovation 
+
+     Level 3 
+
+•  Log command deadline adherence and rejection reasons. 
+
+3. Fault Management and Interlocks 
+
+•  Simulate reception of fault messages from satellite. 
+
+•  Block unsafe commands until resolved. 
+
+•  Track interlock latency (detection to command block). 
+
+•  Document and explain all command rejections. 
+
+• 
+
+If fault response time >100ms, trigger critical ground alert. 
+
+4. System Performance Monitoring 
+
+•  Benchmark uplink jitter, telemetry backlog, and task execution drift. 
+
+•  Record missed deadlines, system load, and fault recovery metrics. 
+
+•  All real-time actions must be logged with timestamps. 
+
+Shared System Requirements 
+
+All students must: 
+
+•  Log scheduling drift: difference between scheduled and actual task start times. 
+
+•  Track latency in all pipelines (sensor to buffer, packet to uplink, command to response). 
+
+•  Record jitter: variation in periodic task timing. 
+
+•  Handle simulated faults and log recovery time. 
+
+• 
+
+• 
+
+Implement safety interlocks and document all rejected operations. 
+
+Include all performance metrics and logs in the final report. 
+
+Deliverables 
+
+1.  Source Code (Rust): Modular, documented, and functional. 
+
+2.  Simulation Logs: Include all latency, drift, jitter, and fault recovery data. 
+
+3.  Individual Report (3000 words) with the following structure: 
+
+•  Abstract 
+
+• 
+
+Introduction & Problem Statement 
+
+•  Literature Review (Rust, real-time concepts) 
+
+•  Design Overview (diagrams, components) 
+
+•  Results & Discussion (benchmarking, safety) 
+
+•  Conclusion 
+
+ 
+ 
+ 
+Realtime Systems - CT087-3-3 
+
+                Asia Pacific University of Technology & Innovation 
+
+     Level 3 
+
+•  References 
+
+Deadlines 
+
+•  Assignment Handout: 18th December 2025 
+
+• 
+
+Interim Review (code): 13th February 2026 
+
+•  Final Submission: 13th March 2026 
+
+•  Demo Week: 20th March 2026 
+
+Evaluation Criteria 
+
+Criteria 
+
+Weight 
+35% 
+Functional Correctness 
+25% 
+Rust Code Quality 
+Scheduling & System Design  20% 
+Integration & Communication  10% 
+Presentation & Benchmarking  10% 
+Individual  report  accounts  for  20%  separately,  focusing  on  design  insight,  benchmarking  interpretation,  and  clarity  of 
+analysis. 
+
+Notes 
+
+•  Collaboration is expected for system integration but all assessments are individual. 
+
+•  Each student must benchmark and analyze both their own and their partner's subsystem. 
+
+•  Failure to handle safety or deadline violations meaningfully may result in critical penalties. 
+
+•  Extensions will not be granted for code integration issues close to the deadline. 
+
+ 
+ 
+ 
+ 
+ 
+

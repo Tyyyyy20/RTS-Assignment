@@ -179,9 +179,14 @@ pub async fn spawn_rm(cfg: Config) {
 
         // Process the job in larger chunks to reduce overhead
         while job.remaining_ms > 0.0 {
-            // simulate "doing work" for one slice (we just account time; don't busy-spin)
+            // Simulate "doing work" for one slice using busy-wait for sub-ms precision.
+            // (tokio::time::sleep has ~15ms resolution on Windows, which destroys scheduling)
             let slice = job.remaining_ms.min(SLICE_MS);
-            time::sleep(Duration::from_micros((slice * 1000.0) as u64)).await;
+            let slice_target = std::time::Instant::now()
+                + std::time::Duration::from_micros((slice * 1000.0) as u64);
+            while std::time::Instant::now() < slice_target {
+                tokio::task::yield_now().await;
+            }
             job.remaining_ms -= slice;
             ran_ms += slice;
             active_ms_acc += slice;

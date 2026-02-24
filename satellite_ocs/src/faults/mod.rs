@@ -1,10 +1,23 @@
 // src/faults/mod.rs
 use once_cell::sync::OnceCell;
+use std::collections::HashSet;
+use std::sync::Mutex as StdMutex;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::{self, Duration, Instant};
 use tracing::{info, warn};
 use uuid::Uuid;
 use chrono::Utc;
+
+/// Set of subsystem names currently under active fault (e.g. "thermal", "power", "attitude")
+static ACTIVE_FAULTS: once_cell::sync::Lazy<StdMutex<HashSet<String>>> =
+    once_cell::sync::Lazy::new(|| StdMutex::new(HashSet::new()));
+
+/// Returns true if the given system name (case-insensitive substring match) is under active fault.
+pub fn is_system_faulted(target: &str) -> bool {
+    let set = ACTIVE_FAULTS.lock().unwrap();
+    let t = target.to_lowercase();
+    set.iter().any(|s| t.contains(s))
+}
 
 #[derive(Debug, Clone)]
 pub enum FaultEvent {
@@ -89,11 +102,23 @@ pub fn init_and_spawn() {
                 }
             };
 
+            // Mark the target subsystem as faulted
+            {
+                let mut set = ACTIVE_FAULTS.lock().unwrap();
+                set.insert(target.to_string());
+            }
+
             // Log the injection
             crate::logging::csv::log_fault_inject(&fault_id, target, kind, duration_ms).await;
 
             // Let the fault persist
             time::sleep(Duration::from_millis(duration_ms)).await;
+
+            // Clear the faulted flag for this target
+            {
+                let mut set = ACTIVE_FAULTS.lock().unwrap();
+                set.remove(target);
+            }
 
             // Tell components to recover; start measuring recovery time (deadline = 500ms)
             let _ = bus_tx.send(FaultEvent::Recover {

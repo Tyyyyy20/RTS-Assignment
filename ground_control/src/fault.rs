@@ -713,9 +713,48 @@ impl FaultManager {
                 self.max_acceptable_block_latency_ms);
         }
 
+        // Persist rejected operation to CSV log
+        Self::log_rejected_operation_to_csv(&block_event);
+
         self.command_block_events.push(block_event);
         if self.command_block_events.len() > 500 {
             self.command_block_events.remove(0);
+        }
+    }
+
+    /// Write a rejected operation entry to logs/rejected_ops.csv for persistent audit trail.
+    fn log_rejected_operation_to_csv(event: &CommandBlockEvent) {
+        use std::io::Write;
+        use std::fs::{self, OpenOptions};
+
+        let _ = fs::create_dir_all("logs");
+        let path = "logs/rejected_ops.csv";
+        let fresh = !std::path::Path::new(path).exists();
+
+        match OpenOptions::new().create(true).append(true).open(path) {
+            Ok(mut f) => {
+                if fresh {
+                    let _ = writeln!(f,
+                        "ts,command_id,command_type,target_system,blocking_interlock_id,fault_id,\
+                         fault_to_interlock_ms,interlock_to_block_ms,total_latency_ms");
+                }
+                let ts = Utc::now().to_rfc3339();
+                let _ = writeln!(f,
+                    "{},{},{},{},{},{},{:.3},{:.3},{:.3}",
+                    ts,
+                    event.command_id,
+                    event.command_type,
+                    event.target_system,
+                    event.blocking_interlock_id,
+                    event.fault_id,
+                    event.fault_to_interlock_latency_ms,
+                    event.interlock_to_block_latency_ms,
+                    event.total_fault_to_block_latency_ms,
+                );
+            }
+            Err(e) => {
+                warn!("Failed to write rejected_ops.csv: {}", e);
+            }
         }
     }
 

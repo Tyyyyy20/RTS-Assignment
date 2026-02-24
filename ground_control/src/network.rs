@@ -229,8 +229,10 @@ impl NetworkManager {
         }
 
         // ---- Decrypt (measure decode time too)
+        // Pass the FULL buffer (with length prefix) to open_from_bytes,
+        // because open_from_bytes expects [4-byte len][JSON(EncryptedFrame)].
         let decode_start = Instant::now();
-        let packet = self.crypto.open_from_bytes(frame_bytes)
+        let packet = self.crypto.open_from_bytes(&buffer[..bytes_received])
             .map_err(|e| anyhow::anyhow!("decrypt/open failed: {}", e))?;
         let decode_time_ms = decode_start.elapsed().as_secs_f64() * 1000.0;
 
