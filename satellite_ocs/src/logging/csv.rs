@@ -6,20 +6,21 @@ use tokio::{
     io::{AsyncWriteExt, BufWriter},
 };
 
-
-// All logs use the same OnceCell type for simplicity/consistency.
+// All logs use the same OnceCell structure to keep logging consistent.
 static SENSORS: OnceCell<Arc<Mutex<BufWriter<tokio::fs::File>>>> = OnceCell::const_new();
-static DROPS:   OnceCell<Arc<Mutex<BufWriter<tokio::fs::File>>>> = OnceCell::const_new();
+static DROPS: OnceCell<Arc<Mutex<BufWriter<tokio::fs::File>>>> = OnceCell::const_new();
 static BATCHES: OnceCell<Arc<Mutex<BufWriter<tokio::fs::File>>>> = OnceCell::const_new();
-static SCHED:   OnceCell<Arc<Mutex<BufWriter<tokio::fs::File>>>> = OnceCell::const_new();
-static CPU:     OnceCell<Arc<Mutex<BufWriter<tokio::fs::File>>>> = OnceCell::const_new();
-static DOWNLINK: OnceCell<Arc<Mutex<BufWriter<tokio::fs::File>>>> = OnceCell::const_new(); 
+static SCHED: OnceCell<Arc<Mutex<BufWriter<tokio::fs::File>>>> = OnceCell::const_new();
+static CPU: OnceCell<Arc<Mutex<BufWriter<tokio::fs::File>>>> = OnceCell::const_new();
+static DOWNLINK: OnceCell<Arc<Mutex<BufWriter<tokio::fs::File>>>> = OnceCell::const_new();
 static FAULTS: OnceCell<Arc<Mutex<BufWriter<tokio::fs::File>>>> = OnceCell::const_new();
 
 async fn ensure_dir() {
+    // Ensure the logs directory exists before writing files
     let _ = fs::create_dir_all("logs").await;
 }
 
+// Get or initialize a log file and write header if the file is new
 async fn get_file(
     cell: &OnceCell<Arc<Mutex<BufWriter<tokio::fs::File>>>>,
     path: &str,
@@ -28,23 +29,23 @@ async fn get_file(
     let arc = cell.get_or_init(|| async move {
         ensure_dir().await;
         let fresh = !fs::try_exists(path).await.unwrap_or(false);
-        let f = OpenOptions::new()
+        let log_file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(path)
             .await
             .expect("open log file");
-        let writer = BufWriter::new(f);
+        let writer = BufWriter::new(log_file);
         let m = Arc::new(Mutex::new(writer));
         if fresh {
-            let mut g = m.lock().await;
-            let _ = g.write_all(header.as_bytes()).await;
-            let _ = g.flush().await;
+            let mut log_writer = m.lock().await;
+            let _ = log_writer.write_all(header.as_bytes()).await;
+            let _ = log_writer.flush().await;
         }
         m
     }).await;
     arc.clone()
-} 
+}
 
 async fn get_faults_file() -> Arc<Mutex<BufWriter<tokio::fs::File>>> {
     super::csv::get_file(
@@ -54,7 +55,8 @@ async fn get_faults_file() -> Arc<Mutex<BufWriter<tokio::fs::File>>> {
     ).await
 }
 
-/// sensors.csv: ts,sensor,seq,jitter_ms,drift_ms,processing_latency_ms,priority,status
+/// sensors.csv: sensor timing and processing information
+/// ts,sensor,seq,jitter_ms,drift_ms,processing_latency_ms,priority,status
 pub async fn log_sensor_reading(
     sensor: &str,
     seq: u64,
@@ -65,44 +67,47 @@ pub async fn log_sensor_reading(
     status: &str,
 ) {
     let ts = Utc::now().to_rfc3339();
-    let line = format!(
+    let csv_line = format!(
         "{ts},{sensor},{seq},{jitter_ms:.3},{drift_ms:.3},{proc_ms:.3},{priority},{status}\n"
     );
-    let file = get_file(
+    let log_file = get_file(
         &SENSORS,
         "logs/sensors.csv",
         "ts,sensor,seq,jitter_ms,drift_ms,processing_latency_ms,priority,status\n",
     ).await;
-    let mut f = file.lock().await;
-    let _ = f.write_all(line.as_bytes()).await;
-    let _ = f.flush().await;
+    let mut writer = log_file.lock().await;
+    let _ = writer.write_all(csv_line.as_bytes()).await;
+    let _ = writer.flush().await;
 }
 
-/// drops.csv: ts,priority,dropped_count
+/// drops.csv: dropped packet statistics
+/// ts,priority,dropped_count
 pub async fn log_drop(priority: &str, dropped_count: usize) {
     let ts = Utc::now().to_rfc3339();
-    let line = format!("{ts},{priority},{dropped_count}\n");
-    let file = get_file(&DROPS, "logs/drops.csv", "ts,priority,dropped_count\n").await;
-    let mut f = file.lock().await;
-    let _ = f.write_all(line.as_bytes()).await;
-    let _ = f.flush().await;
+    let csv_line = format!("{ts},{priority},{dropped_count}\n");
+    let log_file = get_file(&DROPS, "logs/drops.csv", "ts,priority,dropped_count\n").await;
+    let mut writer = log_file.lock().await;
+    let _ = writer.write_all(csv_line.as_bytes()).await;
+    let _ = writer.flush().await;
 }
 
-/// batches.csv: ts,total,critical,important,normal
+/// batches.csv: batch sizes and priority distribution
+/// ts,total,critical,important,normal
 pub async fn log_batch(total: usize, c: usize, i: usize, n: usize) {
     let ts = Utc::now().to_rfc3339();
-    let line = format!("{ts},{total},{c},{i},{n}\n");
-    let file = get_file(
+    let csv_line = format!("{ts},{total},{c},{i},{n}\n");
+    let log_file = get_file(
         &BATCHES,
         "logs/batches.csv",
         "ts,total,critical,important,normal\n",
     ).await;
-    let mut f = file.lock().await;
-    let _ = f.write_all(line.as_bytes()).await;
-    let _ = f.flush().await;
+    let mut writer = log_file.lock().await;
+    let _ = writer.write_all(csv_line.as_bytes()).await;
+    let _ = writer.flush().await;
 }
 
-/// scheduler.csv: ts,task,seq,start_delay_ms,completion_delay_ms,runtime_ms,preemptions,deadline_ms
+/// scheduler.csv: task scheduling and timing information
+/// ts,task,seq,start_delay_ms,completion_delay_ms,runtime_ms,preemptions,deadline_ms
 pub async fn log_sched_event(
     task: &str,
     seq: u64,
@@ -113,40 +118,41 @@ pub async fn log_sched_event(
     deadline_ms: f64,
 ) {
     let ts = Utc::now().to_rfc3339();
-    let line = format!(
+    let csv_line = format!(
         "{ts},{task},{seq},{start_delay_ms:.3},{completion_delay_ms:.3},{runtime_ms:.3},{preemptions},{deadline_ms:.3}\n"
     );
-    let file = get_file(
+    let log_file = get_file(
         &SCHED,
         "logs/scheduler.csv",
         "ts,task,seq,start_delay_ms,completion_delay_ms,runtime_ms,preemptions,deadline_ms\n",
     ).await;
-    let mut f = file.lock().await;
-    let _ = f.write_all(line.as_bytes()).await;
-    let _ = f.flush().await;
+    let mut writer = log_file.lock().await;
+    let _ = writer.write_all(csv_line.as_bytes()).await;
+    let _ = writer.flush().await;
 }
 
-/// cpu.csv: ts,window_ms,active_ms,idle_ms,active_pct
+/// cpu.csv: CPU activity window statistics
+/// ts,window_ms,active_ms,idle_ms,active_pct
 pub async fn log_cpu(window_ms: u64, active_ms: f64, idle_ms: f64) {
     let ts = Utc::now().to_rfc3339();
     let active_pct = if window_ms > 0 {
-    (active_ms / window_ms as f64) * 100.0
-} else {
-    0.0
-};
-
-    let line = format!("{ts},{window_ms},{active_ms:.3},{idle_ms:.3},{active_pct:.2}\n");
-    let file = get_file(
+        (active_ms / window_ms as f64) * 100.0
+    } else {
+        0.0
+    };
+    let csv_line = format!("{ts},{window_ms},{active_ms:.3},{idle_ms:.3},{active_pct:.2}\n");
+    let log_file = get_file(
         &CPU,
         "logs/cpu.csv",
         "ts,window_ms,active_ms,idle_ms,active_pct\n",
     ).await;
-    let mut f = file.lock().await;
-    let _ = f.write_all(line.as_bytes()).await;
-    let _ = f.flush().await;
-} 
+    let mut writer = log_file.lock().await;
+    let _ = writer.write_all(csv_line.as_bytes()).await;
+    let _ = writer.flush().await;
+}
 
-/// downlink.csv: ts,event,info
+/// downlink.csv: downlink transmission statistics
+/// ts,batch_size,avg_queue_ms,max_queue_ms,fill_pct,event
 pub async fn log_downlink(
     batch_size: usize,
     avg_queue_ms: f64,
@@ -155,28 +161,30 @@ pub async fn log_downlink(
     event: &str,
 ) {
     let ts = Utc::now().to_rfc3339();
-    let line = format!("{ts},{batch_size},{avg_queue_ms:.3},{max_queue_ms:.3},{fill_pct:.1},{event}\n");
-    let file = get_file(
+    let csv_line = format!("{ts},{batch_size},{avg_queue_ms:.3},{max_queue_ms:.3},{fill_pct:.1},{event}\n");
+    let log_file = get_file(
         &DOWNLINK,
         "logs/downlink.csv",
         "ts,batch_size,avg_queue_ms,max_queue_ms,fill_pct,event\n",
     ).await;
-    let mut f = file.lock().await;
-    let _ = f.write_all(line.as_bytes()).await;
-    let _ = f.flush().await;
-} 
-
-/// faults.csv (injection): ts=now, event="inject"
-pub async fn log_fault_inject(fault_id: &str, target: &str, kind: &str, duration_ms: u64) {
-    let ts = Utc::now().to_rfc3339();
-    let line = format!("{ts},inject,{fault_id},{target},{kind},{duration_ms},,,,\n");
-    let f = get_faults_file().await;
-    let mut g = f.lock().await;
-    let _ = g.write_all(line.as_bytes()).await;
-    let _ = g.flush().await;
+    let mut writer = log_file.lock().await;
+    let _ = writer.write_all(csv_line.as_bytes()).await;
+    let _ = writer.flush().await;
 }
 
-/// faults.csv (recovery): ts=now, event="recovery"
+/// faults.csv (injection event)
+/// ts=now, event="inject"
+pub async fn log_fault_inject(fault_id: &str, target: &str, kind: &str, duration_ms: u64) {
+    let ts = Utc::now().to_rfc3339();
+    let csv_line = format!("{ts},inject,{fault_id},{target},{kind},{duration_ms},,,,\n");
+    let writer = get_faults_file().await;
+    let mut log_writer = writer.lock().await;
+    let _ = log_writer.write_all(csv_line.as_bytes()).await;
+    let _ = log_writer.flush().await;
+}
+
+/// faults.csv (recovery event)
+/// ts=now, event="recovery"
 pub async fn log_fault_recovery(
     fault_id: &str,
     component: &str,
@@ -184,40 +192,17 @@ pub async fn log_fault_recovery(
     aborted: bool,
 ) {
     let ts = Utc::now().to_rfc3339();
-    let line = format!(
+    let csv_line = format!(
         "{ts},recovery,{fault_id},,,,{component},{recovery_ms:.1},{aborted},\n"
     );
-    let f = get_faults_file().await;
-    let mut g = f.lock().await;
-    let _ = g.write_all(line.as_bytes()).await;
-    let _ = g.flush().await;
-} 
-
-static COMMANDS: OnceCell<Arc<Mutex<BufWriter<tokio::fs::File>>>> = OnceCell::const_new();
-
-/// commands.csv: ts,command_id,command_type,target_system,execution_time_ms,status
-pub async fn log_command(
-    command_id: &str,
-    command_type: &str,
-    target_system: &str,
-    execution_time_ms: f64,
-    status: &str,
-) {
-    let ts = Utc::now().to_rfc3339();
-    let line = format!(
-        "{ts},{command_id},{command_type},{target_system},{execution_time_ms:.3},{status}\n"
-    );
-    let file = get_file(
-        &COMMANDS,
-        "logs/commands.csv",
-        "ts,command_id,command_type,target_system,execution_time_ms,status\n",
-    ).await;
-    let mut f = file.lock().await;
-    let _ = f.write_all(line.as_bytes()).await;
-    let _ = f.flush().await;
+    let writer = get_faults_file().await;
+    let mut log_writer = writer.lock().await;
+    let _ = log_writer.write_all(csv_line.as_bytes()).await;
+    let _ = log_writer.flush().await;
 }
 
-// txqueue.csv: ts,oldest_ms,fill_pct
+/// txqueue.csv: queue latency and buffer fill percentage
+/// ts,oldest_ms,fill_pct
 pub async fn log_tx_queue(oldest_ms: f64, fill_pct: f64) {
     use tokio::sync::OnceCell;
     use tokio::{fs::{self, OpenOptions}, io::AsyncWriteExt, sync::Mutex};
@@ -229,20 +214,18 @@ pub async fn log_tx_queue(oldest_ms: f64, fill_pct: f64) {
         TXQ.get_or_init(|| async {
             let _ = fs::create_dir_all("logs").await;
             let fresh = !fs::try_exists("logs/txqueue.csv").await.unwrap_or(false);
-            let f = OpenOptions::new().create(true).append(true).open("logs/txqueue.csv").await.unwrap();
-            let m = Mutex::new(f);
+            let log_file = OpenOptions::new().create(true).append(true).open("logs/txqueue.csv").await.unwrap();
+            let m = Mutex::new(log_file);
             if fresh {
-                let mut g = m.lock().await;
-                let _ = g.write_all(b"ts,oldest_ms,fill_pct\n").await;
+                let mut log_writer = m.lock().await;
+                let _ = log_writer.write_all(b"ts,oldest_ms,fill_pct\n").await;
             }
             m
         }).await
     }
 
     let ts = Utc::now().to_rfc3339();
-    let line = format!("{ts},{oldest_ms:.3},{fill_pct:.1}\n");
-    let mut f = file().await.lock().await;
-    let _ = f.write_all(line.as_bytes()).await;
+    let csv_line = format!("{ts},{oldest_ms:.3},{fill_pct:.1}\n");
+    let mut writer = file().await.lock().await;
+    let _ = writer.write_all(csv_line.as_bytes()).await;
 }
-
- 

@@ -1,4 +1,3 @@
-// src/main.rs
 mod config;
 mod crypto;
 mod errors;
@@ -78,7 +77,7 @@ async fn main() -> Result<()> {
     // 5) Heartbeat sender (SystemHealth)
     health::spawn_heartbeat(cfg.clone(), crypto.clone(), tx_sock.clone()).await;
 
-    info!("OCS running. Press Ctrl+C to stop…");
+    info!("Satellite OCS running. Press Ctrl+C to exit.");
 
     // -------- graceful shutdown ----------
     if let Err(e) = tokio::signal::ctrl_c().await {

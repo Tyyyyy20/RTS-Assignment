@@ -87,14 +87,14 @@ pub fn spawn() {
             r.processing_latency_ms = 0.0;
 
             info!(
-                event = "sensor_sample",
-                kind = "thermal",
-                seq = seq,
-                temp_c = format_args!("{:.1}", temp_c),
-                actual_ms = format_args!("{:.3}", actual_ms),
-                ideal_ms = format_args!("{:.3}", ideal_ms),
-                jitter_ms = format_args!("{:.3}", r.jitter_ms),
-                drift_ms = format_args!("{:.3}", r.drift_ms),
+                event="sensor_sample",
+                kind="thermal",
+                seq=seq,
+                actual_ms=format_args!("{:.3}",actual_ms),
+                ideal_ms=format_args!("{:.3}",ideal_ms),
+                jitter_ms=format_args!("{:.3}",r.jitter_ms),
+                drift_ms=format_args!("{:.3}",r.drift_ms),
+                temp_c=format_args!("{:.1}",temp_c),
             );
 
             // enqueue to telemetry

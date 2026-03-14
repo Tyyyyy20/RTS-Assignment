@@ -50,7 +50,7 @@ struct Job {
 }
 
 /// Spawn the RM scheduler loop.
-/// - Schedules: antenna_alignment(50ms), data_compression(100ms), health_monitor(1000ms)
+/// - Schedules: navigation_update(50ms), data_compression(100ms), health_monitor(1000ms)
 /// - Preemption: a sporadic, highest-priority thermal_control job is injected when PREEMPT_CH fires.
 pub async fn spawn_rm(cfg: Config) {
     let now = Instant::now();
@@ -58,7 +58,7 @@ pub async fn spawn_rm(cfg: Config) {
     // RM priority by period (lower number = higher priority)
     // Moderately increased WCET to account for async overhead
     let mut tasks = vec![
-        RtTask::new("antenna_alignment",  50, 3.0, 1, now),   // high - increased from 1.5
+        RtTask::new("navigation_update",  50, 3.0, 1, now),   // high - increased from 1.5
         RtTask::new("data_compression",  100, 6.0, 2, now),   // medium - increased from 3.0
         RtTask::new("health_monitor",   1000, 2.0, 3, now),   // low - increased from 1.0
     ];
@@ -179,14 +179,9 @@ pub async fn spawn_rm(cfg: Config) {
 
         // Process the job in larger chunks to reduce overhead
         while job.remaining_ms > 0.0 {
-            // Simulate "doing work" for one slice using busy-wait for sub-ms precision.
-            // (tokio::time::sleep has ~15ms resolution on Windows, which destroys scheduling)
+            // simulate "doing work" for one slice (we just account time; don't busy-spin)
             let slice = job.remaining_ms.min(SLICE_MS);
-            let slice_target = std::time::Instant::now()
-                + std::time::Duration::from_micros((slice * 1000.0) as u64);
-            while std::time::Instant::now() < slice_target {
-                tokio::task::yield_now().await;
-            }
+            time::sleep(Duration::from_micros((slice * 1000.0) as u64)).await;
             job.remaining_ms -= slice;
             ran_ms += slice;
             active_ms_acc += slice;

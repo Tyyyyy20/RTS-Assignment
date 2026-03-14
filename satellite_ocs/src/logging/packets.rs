@@ -1,21 +1,43 @@
-// logging/packets.rs (new helper)
+// logging/packets.rs (helper for packet transmission logs)
+
 use tokio::{io::AsyncWriteExt, fs::OpenOptions, sync::Mutex};
 use tokio::sync::OnceCell;
 use chrono::Utc;
 
+// Global writer used to log packet transmission data.
+// OnceCell ensures the file is opened only once during runtime.
 static PACKETS: OnceCell<Mutex<tokio::fs::File>> = OnceCell::const_new();
 
+/// Log a packet transmission record.
+/// packets.csv format:
+/// ts,packet_type,seq,bytes
 pub async fn log_packet(pkt_type: &str, seq: u32, size: usize) {
-    let file = PACKETS.get_or_init(|| async {
-        let f = OpenOptions::new().create(true).append(true).open("logs/packets.csv").await.unwrap();
-        let m = Mutex::new(f);
-        let mut g = m.lock().await;
-        let _ = g.write_all(b"ts,packet_type,seq,bytes\n").await;
+
+    // Initialize the log file on first use
+    let log_file = PACKETS.get_or_init(|| async {
+        let writer = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("logs/packets.csv")
+            .await
+            .unwrap();
+
+        let m = Mutex::new(writer);
+
+        // Write CSV header when the file is first created
+        let mut writer = m.lock().await;
+        let _ = writer.write_all(b"ts,packet_type,seq,bytes\n").await;
+
         m
     }).await;
 
+    // Generate timestamp for this log entry
     let ts = Utc::now().to_rfc3339();
-    let line = format!("{ts},{pkt_type},{seq},{size}\n");
-    let mut f = file.lock().await;
-    let _ = f.write_all(line.as_bytes()).await;
+
+    // Build the CSV log line
+    let csv_line = format!("{ts},{pkt_type},{seq},{size}\n");
+
+    // Write the log line to the file
+    let mut writer = log_file.lock().await;
+    let _ = writer.write_all(csv_line.as_bytes()).await;
 }

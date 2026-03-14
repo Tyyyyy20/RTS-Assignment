@@ -1,23 +1,10 @@
 // src/faults/mod.rs
 use once_cell::sync::OnceCell;
-use std::collections::HashSet;
-use std::sync::Mutex as StdMutex;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::{self, Duration, Instant};
 use tracing::{info, warn};
 use uuid::Uuid;
 use chrono::Utc;
-
-/// Set of subsystem names currently under active fault (e.g. "thermal", "power", "attitude")
-static ACTIVE_FAULTS: once_cell::sync::Lazy<StdMutex<HashSet<String>>> =
-    once_cell::sync::Lazy::new(|| StdMutex::new(HashSet::new()));
-
-/// Returns true if the given system name (case-insensitive substring match) is under active fault.
-pub fn is_system_faulted(target: &str) -> bool {
-    let set = ACTIVE_FAULTS.lock().unwrap();
-    let t = target.to_lowercase();
-    set.iter().any(|s| t.contains(s))
-}
 
 #[derive(Debug, Clone)]
 pub enum FaultEvent {
@@ -35,17 +22,18 @@ pub struct FaultAck {
     pub recovered_ts_ms: i64,
 }
 
-// Global bus (publish faults; sensors subscribe)
+// Global broadcast bus used to send fault events to all sensors
 static BUS: OnceCell<broadcast::Sender<FaultEvent>> = OnceCell::new();
-// Acks from sensors back to injector
+// Channel used for sensors to send recovery acknowledgements back
 static ACK_TX: OnceCell<mpsc::Sender<FaultAck>> = OnceCell::new();
 
-/// Sensors call this to listen for faults. Returns None if injector not started yet.
+/// Sensors call this to subscribe and listen for fault events.
+/// Returns None if the fault injector has not started yet.
 pub fn subscribe() -> Option<broadcast::Receiver<FaultEvent>> {
     BUS.get().map(|tx| tx.subscribe())
 }
 
-/// Sensors call this when they have cleared a fault after `Recover`.
+/// Sensors call this after they have successfully recovered from a fault.
 pub async fn ack_recovered(fault_id: &str, component: &str) {
     if let Some(tx) = ACK_TX.get() {
         let _ = tx
@@ -58,26 +46,36 @@ pub async fn ack_recovered(fault_id: &str, component: &str) {
     }
 }
 
-/// Start the injector: every 60s, inject one fault, then send Recover and measure recovery time.
-/// If recovery > 200ms, broadcast Abort and log mission abort.
+/// Starts the fault injector task.
+///
+/// Every 60 seconds a fault is injected into the system.
+/// The system then waits for components to recover and acknowledge the recovery.
+///
+/// If recovery time exceeds 200ms, the system will abort the mission.
 pub fn init_and_spawn() {
+    // Broadcast channel for publishing fault events
     let (bus_tx, _bus_rx) = broadcast::channel::<FaultEvent>(64);
+    // Channel for receiving recovery acknowledgements
     let (ack_tx, mut ack_rx) = mpsc::channel::<FaultAck>(64);
+
     let _ = BUS.set(bus_tx.clone());
     let _ = ACK_TX.set(ack_tx);
 
     tokio::spawn(async move {
-        let mut which = 0u64;
+        // Counter used to rotate fault types
+        let mut fault_counter = 0u64;
+        // Trigger a fault every 60 seconds
         let mut ticker = time::interval(Duration::from_secs(60));
         ticker.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
 
         loop {
             ticker.tick().await;
-            which = which.wrapping_add(1);
+            fault_counter = fault_counter.wrapping_add(1);
             let fault_id = Uuid::new_v4().to_string();
 
-            // Round-robin: ThermalDelay (150ms), PowerCorrupt (200ms), AttitudePause (150ms)
-            let (target, kind, duration_ms) = match which % 3 {
+            // Rotate between three fault types
+            // ThermalDelay → PowerCorrupt → AttitudePause
+            let (target, fault_type, duration_ms) = match fault_counter % 3 {
                 0 => {
                     let _ = bus_tx.send(FaultEvent::ThermalDelay {
                         fault_id: fault_id.clone(),
@@ -102,34 +100,31 @@ pub fn init_and_spawn() {
                 }
             };
 
-            // Mark the target subsystem as faulted
-            {
-                let mut set = ACTIVE_FAULTS.lock().unwrap();
-                set.insert(target.to_string());
-            }
+            // Record the injected fault into CSV logs
+            crate::logging::csv::log_fault_inject(
+                &fault_id,
+                target,
+                fault_type,
+                duration_ms
+            ).await;
 
-            // Log the injection
-            crate::logging::csv::log_fault_inject(&fault_id, target, kind, duration_ms).await;
-
-            // Let the fault persist
+            // Allow the fault to remain active for the specified duration
             time::sleep(Duration::from_millis(duration_ms)).await;
 
-            // Clear the faulted flag for this target
-            {
-                let mut set = ACTIVE_FAULTS.lock().unwrap();
-                set.remove(target);
-            }
-
-            // Tell components to recover; start measuring recovery time (deadline = 500ms)
+            // Notify components that recovery should start
             let _ = bus_tx.send(FaultEvent::Recover {
                 fault_id: fault_id.clone(),
             });
+
+            // Start measuring recovery time
             let started = Instant::now();
+            // Maximum waiting time for recovery acknowledgement
             let deadline = started + Duration::from_millis(500);
             let mut recovered = false;
 
             while Instant::now() < deadline {
                 let remaining = deadline.saturating_duration_since(Instant::now());
+
                 match time::timeout(remaining, ack_rx.recv()).await {
                     Ok(Some(ack)) => {
                         if ack.fault_id == fault_id {
@@ -141,41 +136,53 @@ pub fn init_and_spawn() {
                                 &ack.component,
                                 rec_ms,
                                 aborted,
-                            )
-                            .await;
+                            ).await;
 
                             if aborted {
                                 let reason =
-                                    format!("recovery {:.1}ms > 200ms → mission abort", rec_ms);
-                                warn!(%reason, fault_id, "faults: aborting mission");
+                                    format!("recovery {:.1}ms > 200ms", rec_ms);
+
+                                warn!(
+                                    %reason,
+                                    fault_id,
+                                    "mission aborted due to slow recovery"
+                                );
+
                                 let _ = bus_tx.send(FaultEvent::Abort { reason });
                             } else {
                                 info!(
                                     recovery_ms = format_args!("{:.1}", rec_ms),
                                     component = %ack.component,
                                     fault_id = %fault_id,
-                                    "faults: recovered"
+                                    "fault recovered successfully"
                                 );
                             }
 
                             recovered = true;
                             break;
                         }
-                        // unrelated ACK → keep waiting
+                        // ACK for another fault → ignore and keep waiting
                     }
                     Ok(None) => {
-                        // ACK channel closed
+                        // ACK channel closed unexpectedly
                         break;
                     }
-                    Err(_elapsed) => {
-                        // per-await timeout; loop condition will end if past deadline
+                    Err(_) => {
+                        // Timeout for this receive attempt
+                        // Loop will exit if overall deadline is exceeded
                     }
                 }
             }
 
             if !recovered {
-                // No matching ACK within window → abort
-                crate::logging::csv::log_fault_recovery(&fault_id, "unknown", 1000.0, true).await;
+                // No matching ACK received within the allowed time window
+                crate::logging::csv::log_fault_recovery(
+                    &fault_id,
+                    "unknown",
+                    1000.0,
+                    true
+                ).await;
+
                 let _ = bus_tx.send(FaultEvent::Abort {
                     reason: "recovery timeout".into(),
                 });

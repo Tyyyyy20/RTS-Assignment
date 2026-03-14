@@ -14,41 +14,43 @@ use tracing::info;
 
 use super::prio_buffer::{BufferHandle, InsertResult};
 
-/// Sensors send readings here; an ingest task moves them into the priority buffer.
+/// Channel where sensors send readings.
+/// A background ingest task moves these readings into the priority buffer.
 pub static CHANNEL: OnceCell<mpsc::Sender<SensorReading>> = OnceCell::new();
 
-/// Emergency alerts (e.g., from thermal) go here; batcher sends immediately.
+/// Emergency alerts (for example thermal faults).
+/// These bypass batching and are sent immediately.
 pub static EMER_TX: OnceCell<mpsc::Sender<EmergencyData>> = OnceCell::new();
 
-/// The priority bounded buffer
+/// Global bounded priority buffer that stores sensor readings before batching.
 pub static BUFFER: OnceCell<BufferHandle> = OnceCell::new();
 
-/// Initialize the priority buffer (call once from main before spawning sensors)
+/// Initialize the priority buffer (call once from main before sensors start)
 pub fn init_priority_buffer(capacity: usize) {
     let _ = BUFFER.set(BufferHandle::new(capacity));
 }
 
 pub async fn spawn_batcher(cfg: Config, crypto: Crypto, tx_sock: Arc<UdpSocket>, framer: crate::net::framing::Framer) {
-    // 1) sensor ingress channel
+    // 1) Channel where sensors push readings into the system
     let (tx, mut rx) = mpsc::channel::<SensorReading>(1024);
     let _ = CHANNEL.set(tx);
 
-    // 1b) emergency channel
+    // 1b) Channel used for high-priority emergency events
     let (em_tx, mut em_rx) = mpsc::channel::<EmergencyData>(32);
     let _ = EMER_TX.set(em_tx);
 
-    // 2) bounded priority buffer
+    // 2) Ensure the bounded priority buffer exists
     if BUFFER.get().is_none() {
         init_priority_buffer(cfg.max_batch * 8);
     }
     let buf = BUFFER.get().unwrap().clone();
 
-    // 3) Ingest: sensors → bounded buffer (with drop logging)
+    // 3) Ingest task: move sensor readings from the channel into the priority buffer
     tokio::spawn({
         let buf = buf.clone();
         async move {
             while let Some(mut r) = rx.recv().await {
-                // compute read→ingest latency
+                // Calculate latency from sensor reading time to ingestion time
                 let now = chrono::Utc::now();
                 let dt_ms = (now - r.timestamp)
                     .num_microseconds()
@@ -56,7 +58,8 @@ pub async fn spawn_batcher(cfg: Config, crypto: Crypto, tx_sock: Arc<UdpSocket>,
                     .unwrap_or(0.0);
                 r.processing_latency_ms = dt_ms;
 
-                // Insert into bounded buffer; if dropped, log it
+                // Insert reading into the bounded buffer.
+                // If the buffer is full, lower priority data may be dropped.
                 match buf.push(r).await {
                     InsertResult::Accepted => {}
                     InsertResult::Dropped {
@@ -70,7 +73,7 @@ pub async fn spawn_batcher(cfg: Config, crypto: Crypto, tx_sock: Arc<UdpSocket>,
         }
     });
 
-    // 3b) Emergency sender: send EmergencyData immediately
+    // 3b) Emergency sender: emergency packets bypass batching
     {
         let crypto = crypto.clone();
         let tx_sock = tx_sock.clone();
@@ -78,7 +81,7 @@ pub async fn spawn_batcher(cfg: Config, crypto: Crypto, tx_sock: Arc<UdpSocket>,
             while let Some(em) = em_rx.recv().await {
                 let pkt = CommunicationPacket::new_emergency(em, Source::Satellite);
                 if let Ok(bytes) = crypto.seal(&pkt) {
-                    // peek header for pretty logs
+                    // Log metadata of the encrypted frame before sending
                     log_frame_header(&bytes);
                     let _ = tx_sock.send(&bytes).await;
                 }
@@ -86,7 +89,7 @@ pub async fn spawn_batcher(cfg: Config, crypto: Crypto, tx_sock: Arc<UdpSocket>,
         });
     }
 
-    // 4) Batcher: every batch_ms, pop by priority and send
+    // 4) Batcher task: periodically collect readings and transmit them as one batch
     {
         let crypto = crypto.clone();
         let tx_sock = tx_sock.clone();
@@ -97,6 +100,7 @@ pub async fn spawn_batcher(cfg: Config, crypto: Crypto, tx_sock: Arc<UdpSocket>,
 
             loop {
                 tokio::select! {
+                    // Regular periodic transmission
                     _ = ticker.tick() => {
                         if !batch.is_empty() {
                             send(&cfg, &crypto, &tx_sock, &buf_for_send, &mut batch, &framer).await;
@@ -108,6 +112,7 @@ pub async fn spawn_batcher(cfg: Config, crypto: Crypto, tx_sock: Arc<UdpSocket>,
                             }
                         }
                     }
+                    // Opportunistic send when enough readings accumulate
                     else => {
                         let pull = buf_for_send.pop_many(cfg.max_batch).await;
                         if !pull.is_empty() {
@@ -132,17 +137,17 @@ async fn send(
     batch: &mut Vec<SensorReading>,
     framer: &crate::net::framing::Framer,
 ) {
-    // Compute queue latency (oldest sample age)
+    // Compute queue latency (age of the oldest sample in this batch)
     let now = chrono::Utc::now();
     let oldest_ms = batch
         .iter()
         .map(|r| (now - r.timestamp).num_microseconds().unwrap_or(0) as f64 / 1000.0)
         .fold(0.0_f64, f64::max);
 
-    // Buffer fill percent (for degraded mode)
+    // Current buffer fill percentage
     let fill_pct = buf.fill_pct().await;
 
-    // Downlink gate: must be within window + init ≤ 5ms + prep ≤ 30ms
+    // Downlink gate: only allow transmission inside a communication window
     let gate = if let Some(dl) = crate::downlink::DL.get() {
         dl.pre_send().await
     } else {
@@ -151,36 +156,35 @@ async fn send(
 
     match gate {
         crate::downlink::DownlinkEvent::MissedInit => {
-            // treat as missed comms; don't send this batch
+            // Communication window missed; drop this batch
             logging::csv::log_tx_queue(oldest_ms, fill_pct).await;
             batch.clear();
             return;
         }
         crate::downlink::DownlinkEvent::ReadyPrepLate { prep_ms } => {
-            // still send but note the lateness
             tracing::warn!(prep_ms = format_args!("{:.3}", prep_ms), "downlink: prep > 30ms");
         }
         crate::downlink::DownlinkEvent::ReadyDegraded => {
             tracing::warn!("downlink: degraded mode active");
         }
         crate::downlink::DownlinkEvent::NotInWindow => {
-            // optional: you can buffer until next tick; here we just skip send
+            // Not in communication window; skip sending
             logging::csv::log_tx_queue(oldest_ms, fill_pct).await;
             return;
         }
         crate::downlink::DownlinkEvent::Ready => {}
     }
 
-    // Build telemetry packet + encrypt
+    // Build telemetry packet and encrypt it
     let pkt = CommunicationPacket::new_telemetry(batch.clone(), Source::Satellite);
     if let Ok(bytes) = crypto.seal(&pkt) {
-        // log encrypted frame header
+        // Log encrypted frame metadata
         log_frame_header(&bytes);
 
-        // send
+        // Send the encrypted frame to the ground station
         let _ = sock.send(&bytes).await;
 
-        // priority counts for logs
+        // Count readings by priority for logging
         let (mut c, mut i, mut n) = (0, 0, 0);
         for r in batch.iter() {
             match r.priority {
@@ -189,14 +193,22 @@ async fn send(
                 Priority::Normal => n += 1,
             }
         }
+
         logging::csv::log_batch(batch.len(), c, i, n).await;
         logging::csv::log_tx_queue(oldest_ms, fill_pct).await;
-        info!(
-            "tx telemetry: total={} (critical={}, important={}, normal={}), queue_oldest_ms={:.3}, fill_pct={:.1}",
-            batch.len(), c, i, n, oldest_ms, fill_pct
-        );
+        
+info!( "tx telemetry: total={} (critical={}, important={}, normal={}), queue_oldest_ms={:.3}, fill_pct={:.1}", batch.len(), c, i, n, oldest_ms, fill_pct );
+        // info!(
+        //     "tx telemetry",
+        //     queue_oldest_ms = format_args!("{:.3}", oldest_ms),
+        //     fill_pct = format_args!("{:.1}", fill_pct),
+        //     total = batch.len(),
+        //     critical = c,
+        //     important = i,
+        //     normal = n,
+        // );
 
-        // Degraded mode trigger
+        // Enable degraded mode when the buffer is too full
         if fill_pct >= 80.0 {
             if let Some(dl) = crate::downlink::DL.get() {
                 dl.set_degraded(true).await;
@@ -212,6 +224,7 @@ async fn send(
 }
 
 fn log_frame_header(bytes: &[u8]) {
+    // Frame format: [4 bytes length][JSON encoded EncryptedFrame]
     if bytes.len() < 4 {
         return;
     }
@@ -222,14 +235,14 @@ fn log_frame_header(bytes: &[u8]) {
     if let Ok(frame) = serde_json::from_slice::<EncryptedFrame>(&bytes[4..4 + len]) {
         info!(
             event = "tx_frame",
+            seq = frame.header.sequence_number,
             pkt_type = ?frame.header.packet_type,
-            seq      = frame.header.sequence_number,
-            src      = ?frame.header.source,
-            dst      = ?frame.header.destination,
-            key_id   = frame.header.key_id,
-            nonce    = %hex::encode(frame.header.nonce),
+            src = ?frame.header.source,
+            dst = ?frame.header.destination,
+            key_id = frame.header.key_id,
+            nonce = %hex::encode(frame.header.nonce),
             bytes_total = bytes.len(),
-            ct_len      = frame.ciphertext.len(),
+            ct_len = frame.ciphertext.len(),
         );
     }
 }
