@@ -1,0 +1,5 @@
+ts,command_id,command_type,target_system,blocking_interlock_id,fault_id,fault_to_interlock_ms,interlock_to_block_ms,total_latency_ms
+2026-03-14T15:54:38.087740300+00:00,32bbd4b8-8006-463f-8651-5356b754d520,cpu_intensive_tasks,thermal_management,system_overload,SystemOverload_34e65c8b66296c0b,0.000,33.739,33.739
+2026-03-14T15:55:38.083354700+00:00,48ead290-a06a-4135-934e-1caabd8d8f56,cpu_intensive_tasks,thermal_management,thermal_emergency,ThermalAnomaly_c9c8d0a7959d1125,3.525,25160.817,25164.342
+2026-03-14T15:56:38.085051500+00:00,ac2a6c77-7f5b-4cd7-9f91-688870771ea3,cpu_intensive_tasks,thermal_management,thermal_emergency,ThermalAnomaly_c9c8d0a7959d1125,3.525,85161.634,85165.159
+2026-03-14T15:57:38.081498300+00:00,f641b750-277f-4ca5-a01e-25845e21a011,cpu_intensive_tasks,thermal_management,thermal_emergency,ThermalAnomaly_c9c8d0a7959d1125,3.525,145157.377,145160.902

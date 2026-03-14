@@ -179,7 +179,7 @@ impl ThermalSensor {
         SensorReading {
             sensor_id: self.sensor_id,
             sensor_type: SensorType::Thermal,
-            description: format!("Temperature sensor at {}", self.location),
+            description: format!("Thermal sensor reading from {}", self.location),
             location: self.location.clone(),
             timestamp: Utc::now(),
             sequence_number,
@@ -250,7 +250,7 @@ impl PowerSensor {
         SensorReading {
             sensor_id: self.sensor_id,
             sensor_type: SensorType::Power,
-            description: format!("Power management sensor at {}", self.location),
+            description: format!("Power subsystem sensor reading from {}", self.location),
             location: self.location.clone(),
             timestamp: Utc::now(),
             sequence_number,
@@ -323,7 +323,7 @@ impl AttitudeSensor {
         SensorReading {
             sensor_id: self.sensor_id,
             sensor_type: SensorType::Attitude,
-            description: format!("Attitude control sensor at {}", self.location),
+            description: format!("Attitude sensor reading from {}", self.location),
             location: self.location.clone(),
             timestamp: Utc::now(),
             sequence_number,
@@ -378,7 +378,7 @@ impl Command {
         Self {
             command_id: Uuid::new_v4().to_string(),
             command_type: CommandType::ThermalControl,
-            description: format!("Set thermal sensor {} to normal operation", sensor_id),
+            description: format!("Set thermal sensor {} to nominal mode", sensor_id),
             target_system: TargetSystem::ThermalManagement,
             timestamp: Utc::now(),
             deadline: Some(Utc::now() + chrono::Duration::seconds(10)),
@@ -396,14 +396,14 @@ impl Command {
     }
 
     pub fn thermal_warning_response(sensor_id: u32, temperature: f64) -> Self {
-        let mut meta = HashMap::new();
-        meta.insert("trigger_temp".into(), temperature.to_string());
-        meta.insert("action".into(), "preventive_cooling".into());
+        let mut metadata = HashMap::new();
+        metadata.insert("trigger_temp".into(), temperature.to_string());
+        metadata.insert("action".into(), "preventive_cooling".into());
         Self {
             command_id: Uuid::new_v4().to_string(),
             command_type: CommandType::ThermalControl,
             description: format!(
-                "Thermal warning response for sensor {} at {}°C",
+                "Thermal warning mitigation for sensor {} at {}°C",
                 sensor_id, temperature
             ),
             target_system: TargetSystem::ThermalManagement,
@@ -418,20 +418,20 @@ impl Command {
             priority: Priority::Important,
             source: Source::GroundControl,
             destination: Source::Satellite,
-            metadata: meta,
+            metadata,
         }
     }
 
     pub fn thermal_critical_response(sensor_id: u32, temperature: f64) -> Self {
-        let mut meta = HashMap::new();
-        meta.insert("trigger_temp".into(), temperature.to_string());
-        meta.insert("action".into(), "aggressive_cooling".into());
-        meta.insert("power_reduction".into(), "30".into());
+        let mut metadata = HashMap::new();
+        metadata.insert("trigger_temp".into(), temperature.to_string());
+        metadata.insert("action".into(), "aggressive_cooling".into());
+        metadata.insert("power_reduction".into(), "30".into());
         Self {
             command_id: Uuid::new_v4().to_string(),
             command_type: CommandType::ThermalControl,
             description: format!(
-                "Critical thermal response for sensor {} at {}°C",
+                "Critical thermal mitigation for sensor {} at {}°C",
                 sensor_id, temperature
             ),
             target_system: TargetSystem::ThermalManagement,
@@ -446,20 +446,20 @@ impl Command {
             priority: Priority::Critical,
             source: Source::GroundControl,
             destination: Source::Satellite,
-            metadata: meta,
+            metadata,
         }
     }
 
     pub fn thermal_emergency_response(sensor_id: u32, temperature: f64) -> Self {
-        let mut meta = HashMap::new();
-        meta.insert("trigger_temp".into(), temperature.to_string());
-        meta.insert("shutdown_non_essential".into(), "true".into());
-        meta.insert("maintain_life_support".into(), "true".into());
+        let mut metadata = HashMap::new();
+        metadata.insert("trigger_temp".into(), temperature.to_string());
+        metadata.insert("shutdown_non_essential".into(), "true".into());
+        metadata.insert("maintain_life_support".into(), "true".into());
         Self {
             command_id: Uuid::new_v4().to_string(),
             command_type: CommandType::Emergency,
             description: format!(
-                "EMERGENCY: Thermal shutdown for sensor {} at {}°C",
+                "EMERGENCY: thermal shutdown command for sensor {} at {}°C",
                 sensor_id, temperature
             ),
             target_system: TargetSystem::AllSystems,
@@ -474,7 +474,7 @@ impl Command {
             priority: Priority::Emergency,
             source: Source::GroundControl,
             destination: Source::Satellite,
-            metadata: meta,
+            metadata,
         }
     }
 
@@ -483,7 +483,7 @@ impl Command {
         Self {
             command_id: Uuid::new_v4().to_string(),
             command_type: CommandType::PowerControl,
-            description: format!("Set power sensor {} to normal operation", sensor_id),
+            description: format!("Set power sensor {} to nominal mode", sensor_id),
             target_system: TargetSystem::PowerManagement,
             timestamp: Utc::now(),
             deadline: Some(Utc::now() + chrono::Duration::seconds(10)),
@@ -501,15 +501,15 @@ impl Command {
     }
 
     pub fn power_warning_response(sensor_id: u32, battery_level: f64) -> Self {
-        let mut meta = HashMap::new();
-        meta.insert("battery_level".into(), battery_level.to_string());
-        meta.insert("action".into(), "power_conservation".into());
-        meta.insert("dim_displays".into(), "true".into());
+        let mut metadata = HashMap::new();
+        metadata.insert("battery_level".into(), battery_level.to_string());
+        metadata.insert("action".into(), "power_conservation".into());
+        metadata.insert("dim_displays".into(), "true".into());
         Self {
             command_id: Uuid::new_v4().to_string(),
             command_type: CommandType::PowerControl,
             description: format!(
-                "Power conservation for sensor {} at {}% battery",
+                "Power conservation command for sensor {} at {}% battery",
                 sensor_id, battery_level
             ),
             target_system: TargetSystem::PowerManagement,
@@ -524,20 +524,20 @@ impl Command {
             priority: Priority::Important,
             source: Source::GroundControl,
             destination: Source::Satellite,
-            metadata: meta,
+            metadata,
         }
     }
 
     pub fn power_critical_response(sensor_id: u32, battery_level: f64) -> Self {
-        let mut meta = HashMap::new();
-        meta.insert("battery_level".into(), battery_level.to_string());
-        meta.insert("shutdown_non_critical".into(), "true".into());
-        meta.insert("hibernate_mode".into(), "partial".into());
+        let mut metadata = HashMap::new();
+        metadata.insert("battery_level".into(), battery_level.to_string());
+        metadata.insert("shutdown_non_critical".into(), "true".into());
+        metadata.insert("hibernate_mode".into(), "partial".into());
         Self {
             command_id: Uuid::new_v4().to_string(),
             command_type: CommandType::PowerControl,
             description: format!(
-                "Critical power saving for sensor {} at {}% battery",
+                "Critical power preservation command for sensor {} at {}% battery",
                 sensor_id, battery_level
             ),
             target_system: TargetSystem::PowerManagement,
@@ -552,7 +552,7 @@ impl Command {
             priority: Priority::Critical,
             source: Source::GroundControl,
             destination: Source::Satellite,
-            metadata: meta,
+            metadata,
         }
     }
 
@@ -561,7 +561,7 @@ impl Command {
         Self {
             command_id: Uuid::new_v4().to_string(),
             command_type: CommandType::AttitudeControl,
-            description: format!("Set attitude sensor {} to normal operation", sensor_id),
+            description: format!("Set attitude sensor {} to nominal mode", sensor_id),
             target_system: TargetSystem::AttitudeControl,
             timestamp: Utc::now(),
             deadline: Some(Utc::now() + chrono::Duration::seconds(10)),
@@ -579,14 +579,14 @@ impl Command {
     }
 
     pub fn attitude_warning_response(sensor_id: u32, error_degrees: f64) -> Self {
-        let mut meta = HashMap::new();
-        meta.insert("error_degrees".into(), error_degrees.to_string());
-        meta.insert("action".into(), "gentle_correction".into());
+        let mut metadata = HashMap::new();
+        metadata.insert("error_degrees".into(), error_degrees.to_string());
+        metadata.insert("action".into(), "gentle_correction".into());
         Self {
             command_id: Uuid::new_v4().to_string(),
             command_type: CommandType::AttitudeControl,
             description: format!(
-                "Attitude correction for sensor {} with {}° error",
+                "Attitude correction command for sensor {} with {}° error",
                 sensor_id, error_degrees
             ),
             target_system: TargetSystem::AttitudeControl,
@@ -601,20 +601,20 @@ impl Command {
             priority: Priority::Important,
             source: Source::GroundControl,
             destination: Source::Satellite,
-            metadata: meta,
+            metadata,
         }
     }
 
     pub fn attitude_critical_response(sensor_id: u32, error_degrees: f64) -> Self {
-        let mut meta = HashMap::new();
-        meta.insert("error_degrees".into(), error_degrees.to_string());
-        meta.insert("action".into(), "aggressive_stabilization".into());
-        meta.insert("all_thrusters".into(), "true".into());
+        let mut metadata = HashMap::new();
+        metadata.insert("error_degrees".into(), error_degrees.to_string());
+        metadata.insert("action".into(), "aggressive_stabilization".into());
+        metadata.insert("all_thrusters".into(), "true".into());
         Self {
             command_id: Uuid::new_v4().to_string(),
             command_type: CommandType::AttitudeControl,
             description: format!(
-                "Critical attitude stabilization for sensor {} with {}° error",
+                "Critical attitude stabilization command for sensor {} with {}° error",
                 sensor_id, error_degrees
             ),
             target_system: TargetSystem::AttitudeControl,
@@ -629,20 +629,20 @@ impl Command {
             priority: Priority::Critical,
             source: Source::GroundControl,
             destination: Source::Satellite,
-            metadata: meta,
+            metadata,
         }
     }
 
     // ----------------------- CROSS SYSTEM / OTHER --------------------------
     pub fn re_request_command(sensor_id: u32, sensor_type: SensorType, reason: &str) -> Self {
-        let mut meta = HashMap::new();
-        meta.insert("sensor_type".into(), format!("{sensor_type:?}").to_lowercase());
-        meta.insert("reason".into(), reason.to_string());
+        let mut metadata = HashMap::new();
+        metadata.insert("sensor_type".into(), format!("{sensor_type:?}").to_lowercase());
+        metadata.insert("reason".into(), reason.to_string());
         Self {
             command_id: Uuid::new_v4().to_string(),
             command_type: CommandType::DataRequest,
             description: format!(
-                "Re-request data from {:?} sensor {} due to {}",
+                "Request retransmission from {:?} sensor {} because {}",
                 sensor_type, sensor_id, reason
             ),
             target_system: match sensor_type {
@@ -661,13 +661,13 @@ impl Command {
             priority: Priority::Important,
             source: Source::GroundControl,
             destination: Source::Satellite,
-            metadata: meta,
+            metadata,
         }
     }
 
     pub fn enter_safe_mode(triggered_sensors: Vec<u32>) -> Self {
-        let mut meta = HashMap::new();
-        meta.insert(
+        let mut metadata = HashMap::new();
+        metadata.insert(
             "triggered_sensors".into(),
             triggered_sensors
                 .iter()
@@ -675,12 +675,12 @@ impl Command {
                 .collect::<Vec<_>>()
                 .join(","),
         );
-        meta.insert("minimal_operations".into(), "true".into());
-        meta.insert("ground_contact_priority".into(), "true".into());
+        metadata.insert("minimal_operations".into(), "true".into());
+        metadata.insert("ground_contact_priority".into(), "true".into());
         Self {
             command_id: Uuid::new_v4().to_string(),
             command_type: CommandType::Emergency,
-            description: "Enter safe mode due to multiple sensor warnings".to_string(),
+            description: "Enter safe mode due to multiple sensor alerts".to_string(),
             target_system: TargetSystem::AllSystems,
             timestamp: Utc::now(),
             deadline: Some(Utc::now() + chrono::Duration::milliseconds(500)),
@@ -693,18 +693,18 @@ impl Command {
             priority: Priority::Emergency,
             source: Source::GroundControl,
             destination: Source::Satellite,
-            metadata: meta,
+            metadata,
         }
     }
 
     pub fn initiate_recovery_mode() -> Self {
-        let mut meta = HashMap::new();
-        meta.insert("recovery_phase".into(), "1".into());
-        meta.insert("gradual_restore".into(), "true".into());
+        let mut metadata = HashMap::new();
+        metadata.insert("recovery_phase".into(), "1".into());
+        metadata.insert("gradual_restore".into(), "true".into());
         Self {
             command_id: Uuid::new_v4().to_string(),
             command_type: CommandType::Recovery,
-            description: "Begin systematic recovery from emergency state".to_string(),
+            description: "Begin structured recovery from emergency state".to_string(),
             target_system: TargetSystem::AllSystems,
             timestamp: Utc::now(),
             deadline: Some(Utc::now() + chrono::Duration::seconds(30)),
@@ -717,18 +717,18 @@ impl Command {
             priority: Priority::Critical,
             source: Source::GroundControl,
             destination: Source::Satellite,
-            metadata: meta,
+            metadata,
         }
     }
 
     pub fn sensor_self_test(sensor_id: u32, sensor_type: SensorType) -> Self {
-        let mut meta = HashMap::new();
-        meta.insert("sensor_type".into(), format!("{sensor_type:?}").to_lowercase());
-        meta.insert("test_type".into(), "comprehensive".into());
+        let mut metadata = HashMap::new();
+        metadata.insert("sensor_type".into(), format!("{sensor_type:?}").to_lowercase());
+        metadata.insert("test_type".into(), "comprehensive".into());
         Self {
             command_id: Uuid::new_v4().to_string(),
             command_type: CommandType::Diagnostic,
-            description: format!("Self-test for {:?} sensor {}", sensor_type, sensor_id),
+            description: format!("Run self-test for {:?} sensor {}", sensor_type, sensor_id),
             target_system: match sensor_type {
                 SensorType::Thermal => TargetSystem::ThermalManagement,
                 SensorType::Power => TargetSystem::PowerManagement,
@@ -745,18 +745,18 @@ impl Command {
             priority: Priority::Important,
             source: Source::GroundControl,
             destination: Source::Satellite,
-            metadata: meta,
+            metadata,
         }
     }
 
     pub fn recalibrate_sensor(sensor_id: u32, sensor_type: SensorType) -> Self {
-        let mut meta = HashMap::new();
-        meta.insert("sensor_type".into(), format!("{sensor_type:?}").to_lowercase());
-        meta.insert("calibration_type".into(), "full".into());
+        let mut metadata = HashMap::new();
+        metadata.insert("sensor_type".into(), format!("{sensor_type:?}").to_lowercase());
+        metadata.insert("calibration_type".into(), "full".into());
         Self {
             command_id: Uuid::new_v4().to_string(),
             command_type: CommandType::Maintenance,
-            description: format!("Recalibrate {:?} sensor {}", sensor_type, sensor_id),
+            description: format!("Run recalibration for {:?} sensor {}", sensor_type, sensor_id),
             target_system: match sensor_type {
                 SensorType::Thermal => TargetSystem::ThermalManagement,
                 SensorType::Power => TargetSystem::PowerManagement,
@@ -773,7 +773,7 @@ impl Command {
             priority: Priority::Important,
             source: Source::GroundControl,
             destination: Source::Satellite,
-            metadata: meta,
+            metadata,
         }
     }
 }
@@ -849,32 +849,32 @@ static GLOBAL_SEQ: AtomicU32 = AtomicU32::new(1);
 
 impl CommunicationPacket {
     pub fn new_telemetry(readings: Vec<SensorReading>, source: Source) -> Self {
-        let payload = PacketPayload::TelemetryData(readings);
-        Self::create_packet(payload, source, PacketType::Telemetry)
+        let packet_payload = PacketPayload::TelemetryData(readings);
+        Self::build_packet(packet_payload, source, PacketType::Telemetry)
     }
 
     pub fn new_command(command: Command, source: Source) -> Self {
-        let payload = PacketPayload::CommandData(command);
-        Self::create_packet(payload, source, PacketType::Command)
+        let packet_payload = PacketPayload::CommandData(command);
+        Self::build_packet(packet_payload, source, PacketType::Command)
     }
 
     pub fn new_emergency(emergency: EmergencyData, source: Source) -> Self {
-        let payload = PacketPayload::EmergencyAlert(emergency);
-        Self::create_packet(payload, source, PacketType::Emergency)
+        let packet_payload = PacketPayload::EmergencyAlert(emergency);
+        Self::build_packet(packet_payload, source, PacketType::Emergency)
     }
 
     pub fn new_ack(ack: CommandAcknowledgment, source: Source) -> Self {
-        let payload = PacketPayload::AcknowledgmentData(ack);
-        Self::create_packet(payload, source, PacketType::Ack)
+        let packet_payload = PacketPayload::AcknowledgmentData(ack);
+        Self::build_packet(packet_payload, source, PacketType::Ack)
     }
 
     pub fn new_heartbeat(health: SystemHealth, source: Source) -> Self {
-        let payload = PacketPayload::HeartbeatData(health);
-        Self::create_packet(payload, source, PacketType::Heartbeat)
+        let packet_payload = PacketPayload::HeartbeatData(health);
+        Self::build_packet(packet_payload, source, PacketType::Heartbeat)
     }
 
-    fn create_packet(payload: PacketPayload, source: Source, packet_type: PacketType) -> Self {
-        let payload_bytes = serde_json::to_vec(&payload).unwrap_or_default();
+    fn build_packet(packet_payload: PacketPayload, source: Source, packet_type: PacketType) -> Self {
+        let payload_bytes = serde_json::to_vec(&packet_payload).unwrap_or_default();
         let destination = match source {
             Source::Satellite => Source::GroundControl,
             Source::GroundControl => Source::Satellite,
@@ -893,34 +893,39 @@ impl CommunicationPacket {
 
         let mut packet = Self {
             header,
-            payload,
+            payload: packet_payload,
             checksum: 0,
         };
         // (Checksum unused under AEAD; retained for compatibility)
-        packet.checksum = packet.calculate_checksum();
+        packet.checksum = packet.compute_checksum();
         packet
     }
 
-    pub fn calculate_checksum(&self) -> u32 {
-        let mut hasher = Hasher::new();
-        hasher.update(self.header.packet_id.as_bytes());
-        hasher.update(&(self.header.protocol_version.to_be_bytes()));
-        hasher.update(&(self.header.sequence_number.to_be_bytes()));
-        hasher.update(&(self.header.payload_size_bytes.to_be_bytes()));
-        if let Ok(hs) = serde_json::to_string(&self.header.source) {
-            hasher.update(hs.as_bytes());
+    pub fn compute_checksum(&self) -> u32 {
+        let mut checksum_hasher = Hasher::new();
+        checksum_hasher.update(self.header.packet_id.as_bytes());
+        checksum_hasher.update(&(self.header.protocol_version.to_be_bytes()));
+        checksum_hasher.update(&(self.header.sequence_number.to_be_bytes()));
+        checksum_hasher.update(&(self.header.payload_size_bytes.to_be_bytes()));
+        if let Ok(source_json) = serde_json::to_string(&self.header.source) {
+            checksum_hasher.update(source_json.as_bytes());
         }
-        if let Ok(hd) = serde_json::to_string(&self.header.destination) {
-            hasher.update(hd.as_bytes());
+        if let Ok(destination_json) = serde_json::to_string(&self.header.destination) {
+            checksum_hasher.update(destination_json.as_bytes());
         }
-        if let Ok(pt) = serde_json::to_string(&self.header.packet_type) {
-            hasher.update(pt.as_bytes());
+        if let Ok(packet_type_json) = serde_json::to_string(&self.header.packet_type) {
+            checksum_hasher.update(packet_type_json.as_bytes());
         }
-        hasher.update(self.header.timestamp.to_rfc3339().as_bytes());
+        checksum_hasher.update(self.header.timestamp.to_rfc3339().as_bytes());
         if let Ok(payload_bytes) = serde_json::to_vec(&self.payload) {
-            hasher.update(&payload_bytes);
+            checksum_hasher.update(&payload_bytes);
         }
-        hasher.finalize()
+        checksum_hasher.finalize()
+    }
+
+    pub fn calculate_checksum(&self) -> u32 {
+        // Backward-compatible alias for callers using the older API name.
+        self.compute_checksum()
     }
 }
 
@@ -967,109 +972,131 @@ impl CryptoContext {
         ChaCha20Poly1305::new(&self.key)
     }
 
-    fn gen_nonce() -> [u8; 12] {
-        let mut nonce = [0u8; 12];
-        OsRng.fill_bytes(&mut nonce);
-        nonce
+    fn generate_nonce_bytes() -> [u8; 12] {
+        let mut nonce_bytes = [0u8; 12];
+        OsRng.fill_bytes(&mut nonce_bytes);
+        nonce_bytes
     }
 
-    /// Seal a logical packet to **length-prefixed encrypted bytes** ready to send.
-    pub fn seal_to_bytes(&self, packet: &CommunicationPacket) -> Result<Vec<u8>, String> {
+    pub fn encode_encrypted_frame(&self, packet: &CommunicationPacket) -> Result<Vec<u8>, String> {
         // Serialize the logical packet (payload+header)
-        let serialized = serde_json::to_vec(packet)
-            .map_err(|e| format!("serialize packet: {e}"))?;
+        let packet_bytes = serde_json::to_vec(packet)
+            .map_err(|e| format!("Packet serialization failed: {e}"))?;
 
-        if serialized.len() > MAX_PACKET_SIZE {
-            return Err(format!("Packet too large before encryption: {}", serialized.len()));
+        if packet_bytes.len() > MAX_PACKET_SIZE {
+            return Err(format!("Packet exceeds pre-encryption size limit: {}", packet_bytes.len()));
         }
 
-        let nonce_arr = Self::gen_nonce();
-        let nonce = Nonce::from_slice(&nonce_arr);
+        let nonce_bytes = Self::generate_nonce_bytes();
+        let nonce = Nonce::from_slice(&nonce_bytes);
 
-        let clear = ClearHeader {
+        let clear_header = ClearHeader {
             protocol_version: PROTOCOL_VERSION,
             packet_type: packet.header.packet_type,
             sequence_number: packet.header.sequence_number,
             source: packet.header.source,
             destination: packet.header.destination,
             key_id: self.key_id,
-            nonce: nonce_arr,
+            nonce: nonce_bytes,
         };
 
-        let aad = serde_json::to_vec(&clear).map_err(|e| format!("serialize AAD: {e}"))?;
+        let associated_data = serde_json::to_vec(&clear_header)
+            .map_err(|e| format!("AAD serialization failed: {e}"))?;
 
         let cipher = self.cipher();
         let ciphertext = cipher
-            .encrypt(nonce, Payload { msg: &serialized, aad: &aad })
-            .map_err(|_| "encryption failed".to_string())?;
+            .encrypt(nonce, Payload { msg: &packet_bytes, aad: &associated_data })
+            .map_err(|_| "Frame encryption failed".to_string())?;
 
-        let frame = EncryptedFrame {
-            header: clear,
+        let encrypted_frame = EncryptedFrame {
+            header: clear_header,
             ciphertext,
         };
 
         // Length-prefixed JSON framing for the encrypted frame
         let frame_bytes =
-            serde_json::to_vec(&frame).map_err(|e| format!("serialize frame: {e}"))?;
+            serde_json::to_vec(&encrypted_frame).map_err(|e| format!("Encrypted frame serialization failed: {e}"))?;
 
         if frame_bytes.len() > MAX_PACKET_SIZE {
-            return Err(format!("Encrypted frame too large: {}", frame_bytes.len()));
+            return Err(format!("Encrypted frame exceeds size limit: {}", frame_bytes.len()));
         }
 
-        let mut out = Vec::with_capacity(frame_bytes.len() + 4);
-        out.extend_from_slice(&(frame_bytes.len() as u32).to_be_bytes());
-        out.extend_from_slice(&frame_bytes);
-        Ok(out)
+        let mut framed_bytes = Vec::with_capacity(frame_bytes.len() + 4);
+        framed_bytes.extend_from_slice(&(frame_bytes.len() as u32).to_be_bytes());
+        framed_bytes.extend_from_slice(&frame_bytes);
+        Ok(framed_bytes)
+    }
+
+    /// Seal a logical packet to **length-prefixed encrypted bytes** ready to send.
+    pub fn seal_to_bytes(&self, packet: &CommunicationPacket) -> Result<Vec<u8>, String> {
+        // Backward-compatible alias for callers using the older API name.
+        self.encode_encrypted_frame(packet)
+    }
+
+    pub fn decode_encrypted_frame(&self, framed_input: &[u8]) -> Result<CommunicationPacket, String> {
+        if framed_input.len() < 4 {
+            return Err("Insufficient data: 4-byte length prefix is missing".into());
+        }
+        let frame_len = u32::from_be_bytes([
+            framed_input[0],
+            framed_input[1],
+            framed_input[2],
+            framed_input[3],
+        ]) as usize;
+        if framed_input.len() < 4 + frame_len {
+            return Err(format!(
+                "Insufficient data: expected {} bytes, got {}",
+                4 + frame_len,
+                framed_input.len()
+            ));
+        }
+        let frame_json = &framed_input[4..4 + frame_len];
+        let encrypted_frame: EncryptedFrame =
+            serde_json::from_slice(frame_json).map_err(|e| format!("Encrypted frame deserialization failed: {e}"))?;
+
+        if encrypted_frame.header.key_id != self.key_id {
+            return Err(format!(
+                "Key ID mismatch: frame={}, context={}",
+                encrypted_frame.header.key_id, self.key_id
+            ));
+        }
+
+        let associated_data = serde_json::to_vec(&encrypted_frame.header)
+            .map_err(|e| format!("AAD serialization failed: {e}"))?;
+        let nonce = Nonce::from_slice(&encrypted_frame.header.nonce);
+
+        let cipher = self.cipher();
+        let plaintext = cipher
+            .decrypt(
+                nonce,
+                Payload {
+                    msg: &encrypted_frame.ciphertext,
+                    aad: &associated_data,
+                },
+            )
+            .map_err(|_| "Frame authentication/decryption failed".to_string())?;
+
+        let packet: CommunicationPacket = serde_json::from_slice(&plaintext)
+            .map_err(|e| format!("Packet deserialization failed: {e}"))?;
+
+        // Optional: sanity checks (version, type, seq) vs clear header
+        if packet.header.protocol_version != encrypted_frame.header.protocol_version
+            || packet.header.packet_type != encrypted_frame.header.packet_type
+            || packet.header.sequence_number != encrypted_frame.header.sequence_number
+            || packet.header.source != encrypted_frame.header.source
+            || packet.header.destination != encrypted_frame.header.destination
+        {
+            return Err("Header mismatch between clear header and decrypted payload".into());
+        }
+
+        Ok(packet)
     }
 
     /// Open **one complete frame** from a contiguous buffer (length-prefixed),
     /// returning the logical `CommunicationPacket`.
     pub fn open_from_bytes(&self, buf: &[u8]) -> Result<CommunicationPacket, String> {
-        if buf.len() < 4 {
-            return Err("insufficient data: need 4-byte length prefix".into());
-        }
-        let len = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
-        if buf.len() < 4 + len {
-            return Err(format!(
-                "insufficient data: expected {} bytes, got {}",
-                4 + len,
-                buf.len()
-            ));
-        }
-        let json = &buf[4..4 + len];
-        let frame: EncryptedFrame =
-            serde_json::from_slice(json).map_err(|e| format!("frame deserialization: {e}"))?;
-
-        if frame.header.key_id != self.key_id {
-            return Err(format!(
-                "key id mismatch: frame={}, ctx={}",
-                frame.header.key_id, self.key_id
-            ));
-        }
-
-        let aad = serde_json::to_vec(&frame.header)
-            .map_err(|e| format!("AAD serialization: {e}"))?;
-        let nonce = Nonce::from_slice(&frame.header.nonce);
-
-        let cipher = self.cipher();
-        let plaintext = cipher
-            .decrypt(nonce, Payload { msg: &frame.ciphertext, aad: &aad })
-            .map_err(|_| "authentication/decryption failed".to_string())?;
-
-        let packet: CommunicationPacket = serde_json::from_slice(&plaintext)
-            .map_err(|e| format!("packet deserialization: {e}"))?;
-
-        // Optional: sanity checks (version, type, seq) vs clear header
-        if packet.header.protocol_version != frame.header.protocol_version
-            || packet.header.packet_type != frame.header.packet_type
-            || packet.header.sequence_number != frame.header.sequence_number
-            || packet.header.source != frame.header.source
-            || packet.header.destination != frame.header.destination
-        {
-            return Err("header mismatch between clear header and decrypted packet".into());
-        }
-
-        Ok(packet)
+        // Backward-compatible alias for callers using the older API name.
+        self.decode_encrypted_frame(buf)
     }
 }
 
@@ -1082,40 +1109,40 @@ mod tests {
     #[test]
     fn telemetry_roundtrip_encrypted() {
         // Build a telemetry packet
-        let thermal = ThermalSensor::new(1, "CPU");
-        let pkt = CommunicationPacket::new_telemetry(
-            vec![thermal.create_reading(72.5, 10)],
+        let thermal_sensor = ThermalSensor::new(1, "CPU");
+        let telemetry_packet = CommunicationPacket::new_telemetry(
+            vec![thermal_sensor.create_reading(72.5, 10)],
             Source::Satellite,
         );
 
         // Crypto
-        let key = [7u8; 32];
-        let crypto = CryptoContext::new(1, key);
+        let test_key = [7u8; 32];
+        let crypto = CryptoContext::new(1, test_key);
 
         // Seal → bytes → open
-        let bytes = crypto.seal_to_bytes(&pkt).expect("seal");
-        let back = crypto.open_from_bytes(&bytes).expect("open");
+        let frame_bytes = crypto.seal_to_bytes(&telemetry_packet).expect("seal");
+        let decoded_packet = crypto.open_from_bytes(&frame_bytes).expect("open");
 
-        assert_eq!(back.header.packet_type, PacketType::Telemetry);
-        assert_eq!(back.header.source, Source::Satellite);
-        assert_eq!(back.header.destination, Source::GroundControl);
-        match back.payload {
-            PacketPayload::TelemetryData(v) => assert_eq!(v.len(), 1),
-            _ => panic!("wrong payload"),
+        assert_eq!(decoded_packet.header.packet_type, PacketType::Telemetry);
+        assert_eq!(decoded_packet.header.source, Source::Satellite);
+        assert_eq!(decoded_packet.header.destination, Source::GroundControl);
+        match decoded_packet.payload {
+            PacketPayload::TelemetryData(readings) => assert_eq!(readings.len(), 1),
+            _ => panic!("unexpected payload kind"),
         }
     }
 
     #[test]
     fn command_roundtrip_encrypted() {
-        let cmd = Command::thermal_normal_operation(1);
-        let pkt = CommunicationPacket::new_command(cmd, Source::GroundControl);
+        let command = Command::thermal_normal_operation(1);
+        let command_packet = CommunicationPacket::new_command(command, Source::GroundControl);
 
         let crypto = CryptoContext::new(42, [9u8; 32]);
-        let bytes = crypto.seal_to_bytes(&pkt).unwrap();
-        let back = crypto.open_from_bytes(&bytes).unwrap();
+        let frame_bytes = crypto.seal_to_bytes(&command_packet).unwrap();
+        let decoded_packet = crypto.open_from_bytes(&frame_bytes).unwrap();
 
-        assert!(matches!(back.header.packet_type, PacketType::Command));
-        assert_eq!(back.header.source, Source::GroundControl);
-        assert_eq!(back.header.destination, Source::Satellite);
+        assert!(matches!(decoded_packet.header.packet_type, PacketType::Command));
+        assert_eq!(decoded_packet.header.source, Source::GroundControl);
+        assert_eq!(decoded_packet.header.destination, Source::Satellite);
     }
 }
