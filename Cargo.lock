@@ -885,7 +885,6 @@ dependencies = [
  "hex",
  "num_cpus",
  "once_cell",
- "rand",
  "serde",
  "serde_json",
  "shared_protocol",

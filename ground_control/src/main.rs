@@ -18,7 +18,7 @@ mod system_monitor;
 
 use network_manager::{NetworkManager, DriftSeverity};
 use telemetry_processor::TelemetryProcessor;
-use fault_management::{FaultManager, FaultSimulator};
+use fault_management::FaultManager;
 use performance_tracker::{PerformanceTracker, PerformanceEvent, EventType};
 use command_scheduler::{CommandScheduler, EnhancedCommandSchedulerStats, UnifiedDeadlineReport};
 
@@ -99,26 +99,6 @@ impl GroundControlSystem {
             while let Some(event) = performance_rx.recv().await {
                 let mut tracker = performance_tracker.lock().await;
                 tracker.record_performance_event(event);
-            }
-        })
-    }
-
-    fn launch_fault_simulation_task(
-        telemetry_tx: mpsc::Sender<(shared_protocol::CommunicationPacket, DateTime<Utc>)>,
-    ) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(async move {
-            let mut fault_simulator = FaultSimulator::new();
-            let mut interval = tokio::time::interval(Duration::from_secs(45));
-            loop {
-                interval.tick().await;
-                let emergency = fault_simulator.create_random_fault();
-                let packet = fault_simulator.create_fault_packet(emergency);
-                let now = Utc::now();
-                if let Err(err) = telemetry_tx.send((packet, now)).await {
-                    error!("Simulated Fault Packet Injection Failed: {err}");
-                } else {
-                    info!("SIM: EmergencyAlert Routed Into Telemetry Pipeline");
-                }
             }
         })
     }
@@ -463,26 +443,41 @@ impl GroundControlSystem {
                 while *is_running.lock().await {
                     itv.tick().await;
 
-                    let missing = {
+                    let candidates = {
                         let mut p = telemetry_processor.lock().await;
-                        let list = p.collect_missing_packet_uplink_candidates();
+                        let missing = p.collect_missing_packet_uplink_candidates();
+                        let delayed = p.collect_delayed_packet_uplink_candidates();
                         p.prune_stale_missing_packets();
                         p.prune_stale_delayed_packets();
-                        list
+                        let mut merged = Vec::with_capacity(missing.len() + delayed.len());
+                        let mut seen = std::collections::HashSet::<String>::new();
+
+                        for c in missing {
+                            if seen.insert(c.packet_id.clone()) {
+                                merged.push((c, "missing".to_string()));
+                            }
+                        }
+                        for c in delayed {
+                            if seen.insert(c.packet_id.clone()) {
+                                merged.push((c, "delayed".to_string()));
+                            }
+                        }
+
+                        merged
                     };
 
-                    for missing in missing {
+                    for (candidate, candidate_reason) in candidates {
                         rr_count += 1;
                         let send_started = std::time::Instant::now();
-                        match network_manager.send_retransmission_request(&missing.packet_id).await {
+                        match network_manager.send_retransmission_request(&candidate.packet_id).await {
                             Ok(_) => {
                                 {
                                     let mut p = telemetry_processor.lock().await;
-                                    p.mark_packet_as_rerequested(&missing.packet_id);
+                                    p.mark_packet_as_rerequested(&candidate.packet_id);
                                 }
 
                                 let uplink_send_ms = send_started.elapsed().as_secs_f64() * 1000.0;
-                                let packet_to_uplink_ms = missing.wait_ms + uplink_send_ms;
+                                let packet_to_uplink_ms = candidate.wait_ms + uplink_send_ms;
 
                                 let _ = performance_tx.send(PerformanceEvent {
                                     timestamp: Utc::now(),
@@ -490,8 +485,9 @@ impl GroundControlSystem {
                                     duration_ms: 0.0,
                                     metadata: {
                                         let mut m = std::collections::HashMap::new();
-                                        m.insert("packet_id".into(), missing.packet_id.clone());
+                                        m.insert("packet_id".into(), candidate.packet_id.clone());
                                         m.insert("re_request_number".into(), rr_count.to_string());
+                                        m.insert("reason".into(), candidate_reason.clone());
                                         m
                                     },
                                 }).await;
@@ -502,20 +498,21 @@ impl GroundControlSystem {
                                     duration_ms: packet_to_uplink_ms,
                                     metadata: {
                                         let mut m = std::collections::HashMap::new();
-                                        m.insert("packet_id".into(), missing.packet_id.clone());
-                                        m.insert("wait_before_uplink_ms".into(), format!("{:.3}", missing.wait_ms));
+                                        m.insert("packet_id".into(), candidate.packet_id.clone());
+                                        m.insert("reason".into(), candidate_reason);
+                                        m.insert("wait_before_uplink_ms".into(), format!("{:.3}", candidate.wait_ms));
                                         m.insert("uplink_send_ms".into(), format!("{:.3}", uplink_send_ms));
                                         m
                                     },
                                 }).await;
                             }
                             Err(e) => {
-                                error!("Retransmission Request Dispatch Failed For {}: {e}", missing.packet_id);
+                                error!("Retransmission Request Dispatch Failed For {}: {e}", candidate.packet_id);
                                 let _ = fault_tx_rerequest.send(fault_management::FaultEvent {
                                     timestamp: Utc::now(),
                                     fault_type: fault_management::FaultType::NetworkError,
                                     severity: fault_management::Severity::Medium,
-                                    description: format!("Packet {} Failed During Retransmission Request; Error: {e}", missing.packet_id),
+                                    description: format!("Packet {} Failed During Retransmission Request; Error: {e}", candidate.packet_id),
                                     affected_systems: vec!["network".into(), "telemetry".into()],
                                 }).await;
                             }
@@ -539,9 +536,7 @@ impl GroundControlSystem {
             let is_running = Arc::clone(&is_running);
             let performance_tracker = Arc::clone(&self.performance_tracker);
             let fault_manager = Arc::clone(&self.fault_manager);
-            let command_scheduler = Arc::clone(&self.command_scheduler);
             let performance_tx = performance_tx.clone();
-            let fault_tx_alert_sim = fault_tx.clone();
 
             tokio::spawn(async move {
                 let mut itv = interval(Duration::from_secs(5));
@@ -587,41 +582,6 @@ impl GroundControlSystem {
                     }
 
                     count += 1;
-
-                    // Every 60 s (12 x 5 s ticks), inject one synthetic critical fault.
-                    // FaultManager tags this marker and intentionally exceeds 100ms
-                    // to exercise the critical ground-alert requirement path.
-                    if count % 12 == 0 {
-                        let _ = fault_tx_alert_sim.send(fault_management::FaultEvent {
-                            timestamp: Utc::now(),
-                            fault_type: fault_management::FaultType::SystemOverload,
-                            severity: fault_management::Severity::Critical,
-                            description: "SIM_CRITICAL_GROUND_ALERT_100MS".to_string(),
-                            affected_systems: vec!["ground_control".to_string()],
-                        }).await;
-                        warn!("Injected synthetic critical-alert test fault (60s cadence)");
-
-                        // Inject a deliberately unsafe command shortly after the fault so
-                        // the newly activated interlock can reject it and emit block latency.
-                        tokio::time::sleep(Duration::from_millis(150)).await;
-                        let unsafe_cmd = shared_protocol::Command::sensor_self_test(
-                            99,
-                            shared_protocol::SensorType::Thermal,
-                        );
-
-                        let mut sched = command_scheduler.lock().await;
-                        match sched.schedule_command(unsafe_cmd) {
-                            Ok(cmd_id) => {
-                                warn!(
-                                    "Injected synthetic unsafe command for interlock-block test: {}",
-                                    cmd_id
-                                );
-                            }
-                            Err(e) => {
-                                warn!("Synthetic unsafe command injection skipped: {}", e);
-                            }
-                        }
-                    }
 
                     // Every 30 s (count increments every 5 s → every 6 ticks) run
                     // the stale-fault sweep so long-lived faults eventually resolve.
@@ -853,9 +813,6 @@ impl GroundControlSystem {
             })
         };
 
-        // Task 8: Simulation – inject an emergency packet periodically
-        let _fault_simulator_task = Self::launch_fault_simulation_task(telemetry_tx.clone());
-
         info!("All Tasks Online. Ground Control Is Operational.");
 
         // Run tasks
@@ -953,7 +910,12 @@ impl GroundControlSystem {
             final_stats.backlog_warn_events,
             final_stats.backlog_critical_events
         );
-        info!("Faults Handled: {} | Critical Faults Active: {}", fault_stats.total_faults_detected, fault_stats.active_faults_count);
+        info!(
+            "Faults Handled: {} | Active Faults: {} | Active Critical Faults: {}",
+            fault_stats.total_faults_detected,
+            fault_stats.active_faults_count,
+            fault_stats.active_critical_faults
+        );
         info!(
             "Critical Ground Alerts (>100ms Fault Response): {}",
             fault_stats.response_time_critical_alerts

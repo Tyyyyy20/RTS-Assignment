@@ -4,8 +4,6 @@ use chrono::{DateTime, Utc};
 use tracing::{info, warn, error};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use rand::Rng;
-use shared_protocol::{EmergencyData, CommunicationPacket, Severity as NetSeverity};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum FaultType {
@@ -127,10 +125,6 @@ pub struct FaultManager {
     loc_total_duration_ms: f64,
 }
 
-pub struct FaultSimulator {
-    simulation_counter: u32,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommandBlockEvent {
     pub command_id: String,
@@ -200,12 +194,6 @@ impl FaultManager {
         let response_timestamp = Utc::now();
 
         info!("Fault Intake Received: {:?} | {}", fault_event.fault_type, fault_event.description);
-
-        // Deterministic test hook for requirement evidence: this marker forces
-        // fault handling over 100ms so critical ground-alert logic is exercised.
-        if fault_event.description.contains("SIM_CRITICAL_GROUND_ALERT_100MS") {
-            tokio::time::sleep(std::time::Duration::from_millis(120)).await;
-        }
 
         let fault_id = self.generate_fault_id(&fault_event);
 
@@ -1112,204 +1100,4 @@ impl std::hash::Hash for FaultType {
             _ => {}
         }
     }
-}
-
-impl FaultSimulator {
-    pub fn new() -> Self { Self { simulation_counter: 0 } }
-
-    pub fn create_thermal_fault(&mut self, severity: u8, temperature: f64) -> EmergencyData {
-        self.simulation_counter += 1;
-
-        let (severity_enum, description, actions) = match severity {
-            0 => (NetSeverity::Critical,
-                format!("CRITICAL: Thermal sensor reading {}°C exceeds emergency threshold (85°C)", temperature),
-                vec![
-                    "IMMEDIATE: Activate emergency cooling".to_string(),
-                    "IMMEDIATE: Reduce power consumption by 50%".to_string(),
-                    "IMMEDIATE: Prepare for emergency shutdown".to_string(),
-                ]),
-            1 => (NetSeverity::High,
-                format!("HIGH: Thermal sensor reading {}°C exceeds critical threshold (80°C)", temperature),
-                vec![
-                    "Activate cooling systems".to_string(),
-                    "Increase thermal monitoring frequency".to_string(),
-                    "Reduce non-essential power consumption".to_string(),
-                ]),
-            2 => (NetSeverity::Medium,
-                format!("MEDIUM: Thermal sensor reading {}°C approaching warning threshold", temperature),
-                vec![
-                    "Monitor thermal trends".to_string(),
-                    "Check cooling system status".to_string(),
-                ]),
-            _ => (NetSeverity::Low,
-                format!("LOW: Thermal sensor anomaly detected at {}°C", temperature),
-                vec!["Continue monitoring".to_string()]),
-        };
-
-        EmergencyData {
-            alert_id: format!("THERMAL_FAULT_{:04}", self.simulation_counter),
-            severity: severity_enum,
-            alert_type: "thermal".to_string(),
-            description,
-            affected_systems: vec!["thermal_management".to_string(), "power_management".to_string()],
-            recommended_actions: actions,
-            auto_recovery_attempted: severity <= 2,
-            timestamp: Utc::now(),
-        }
-    }
-
-    pub fn create_power_fault(&mut self, severity: u8, battery_level: f64) -> EmergencyData {
-        self.simulation_counter += 1;
-
-        let (severity_enum, description, actions) = match severity {
-            0 => (NetSeverity::Critical,
-                format!("CRITICAL: Battery level {}% below critical threshold (20%)", battery_level),
-                vec![
-                    "IMMEDIATE: Enter power conservation mode".to_string(),
-                    "IMMEDIATE: Shutdown non-essential systems".to_string(),
-                    "IMMEDIATE: Prepare for emergency protocols".to_string(),
-                ]),
-            1 => (NetSeverity::High,
-                format!("HIGH: Battery level {}% below low threshold (30%)", battery_level),
-                vec![
-                    "Reduce power consumption".to_string(),
-                    "Optimize power usage".to_string(),
-                    "Monitor charging systems".to_string(),
-                ]),
-            2 => (NetSeverity::Medium,
-                format!("MEDIUM: Power consumption anomaly detected, battery at {}%", battery_level),
-                vec![
-                    "Monitor power trends".to_string(),
-                    "Check power systems".to_string(),
-                ]),
-            _ => (NetSeverity::Low,
-                format!("LOW: Minor power fluctuation, battery at {}%", battery_level),
-                vec!["Continue monitoring".to_string()]),
-        };
-
-        EmergencyData {
-            alert_id: format!("POWER_FAULT_{:04}", self.simulation_counter),
-            severity: severity_enum,
-            alert_type: "power".to_string(),
-            description,
-            affected_systems: vec!["power_management".to_string(), "all_systems".to_string()],
-            recommended_actions: actions,
-            auto_recovery_attempted: severity <= 1,
-            timestamp: Utc::now(),
-        }
-    }
-
-    pub fn create_attitude_fault(&mut self, severity: u8, attitude_error: f64) -> EmergencyData {
-        self.simulation_counter += 1;
-
-        let (severity_enum, description, actions) = match severity {
-            0 => (NetSeverity::Critical,
-                format!("CRITICAL: Attitude error {:.1}° exceeds critical threshold (10°)", attitude_error),
-                vec![
-                    "IMMEDIATE: Activate reaction wheels".to_string(),
-                    "IMMEDIATE: Fire attitude correction thrusters".to_string(),
-                    "IMMEDIATE: Stabilize spacecraft orientation".to_string(),
-                ]),
-            1 => (NetSeverity::High,
-                format!("HIGH: Attitude error {:.1}° exceeds acceptable threshold (5°)", attitude_error),
-                vec![
-                    "Initiate attitude correction".to_string(),
-                    "Increase attitude monitoring frequency".to_string(),
-                    "Check thruster systems".to_string(),
-                ]),
-            2 => (NetSeverity::Medium,
-                format!("MEDIUM: Attitude drift detected, error {:.1}°", attitude_error),
-                vec![
-                    "Monitor attitude trends".to_string(),
-                    "Check attitude sensors".to_string(),
-                ]),
-            _ => (NetSeverity::Low,
-                format!("LOW: Minor attitude adjustment needed, error {:.1}°", attitude_error),
-                vec!["Continue monitoring".to_string()]),
-        };
-
-        EmergencyData {
-            alert_id: format!("ATTITUDE_FAULT_{:04}", self.simulation_counter),
-            severity: severity_enum,
-            alert_type: "attitude".to_string(),
-            description,
-            affected_systems: vec!["attitude_control".to_string()],
-            recommended_actions: actions,
-            auto_recovery_attempted: severity <= 2,
-            timestamp: Utc::now(),
-        }
-    }
-
-    pub fn create_communication_fault(&mut self, severity: u8, packets_lost: u32) -> EmergencyData {
-        self.simulation_counter += 1;
-
-        let (severity_enum, description, actions) = match severity {
-            0 => (NetSeverity::Critical,
-                format!("CRITICAL: Communication failure - {} consecutive packets lost", packets_lost),
-                vec![
-                    "IMMEDIATE: Switch to backup communication".to_string(),
-                    "IMMEDIATE: Increase transmission power".to_string(),
-                    "IMMEDIATE: Attempt emergency contact".to_string(),
-                ]),
-            1 => (NetSeverity::High,
-                format!("HIGH: Communication degradation - {} packets lost", packets_lost),
-                vec![
-                    "Increase packet retransmission".to_string(),
-                    "Check communication systems".to_string(),
-                    "Adjust transmission parameters".to_string(),
-                ]),
-            2 => (NetSeverity::Medium,
-                format!("MEDIUM: Intermittent communication issues - {} packet losses", packets_lost),
-                vec![
-                    "Monitor communication quality".to_string(),
-                    "Check antenna orientation".to_string(),
-                ]),
-            _ => (NetSeverity::Low,
-                format!("LOW: Minor communication anomaly - {} packet retransmissions", packets_lost),
-                vec!["Continue monitoring".to_string()]),
-        };
-
-        EmergencyData {
-            alert_id: format!("COMM_FAULT_{:04}", self.simulation_counter),
-            severity: severity_enum,
-            alert_type: "communication".to_string(),
-            description,
-            affected_systems: vec!["communication".to_string(), "network_management".to_string()],
-            recommended_actions: actions,
-            auto_recovery_attempted: severity >= 1,
-            timestamp: Utc::now(),
-        }
-    }
-
-    pub fn create_random_fault(&mut self) -> EmergencyData {
-        let mut rng = rand::rng();
-
-        match rng.random_range(0..4) {
-            0 => {
-                let temp = rng.random_range(60.0..=95.0);
-                let severity = if temp > 85.0 { 0 } else if temp > 80.0 { 1 } else { 2 };
-                self.create_thermal_fault(severity, temp)
-            },
-            1 => {
-                let battery = rng.random_range(10.0..=40.0);
-                let severity = if battery < 20.0 { 0 } else if battery < 30.0 { 1 } else { 2 };
-                self.create_power_fault(severity, battery)
-            },
-            2 => {
-                let error = rng.random_range(2.0..=15.0);
-                let severity = if error > 10.0 { 0 } else if error > 5.0 { 1 } else { 2 };
-                self.create_attitude_fault(severity, error)
-            },
-            _ => {
-                let packets = rng.random_range(1..=20);
-                let severity = if packets > 10 { 0 } else if packets > 5 { 1 } else { 2 };
-                self.create_communication_fault(severity, packets)
-            }
-        }
-    }
-
-    pub fn create_fault_packet(&mut self, fault_data: EmergencyData) -> CommunicationPacket {
-        CommunicationPacket::new_emergency(fault_data, shared_protocol::Source::GroundControl)
-    }
-
 }

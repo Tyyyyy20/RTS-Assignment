@@ -72,6 +72,7 @@ struct DelayedPacketInfo {
     actual_delay_ms: f64,
     detected_at: DateTime<Utc>,
     reported: bool,
+    re_request_sent: bool,
 }
 
 impl Default for SensorThresholds {
@@ -383,6 +384,7 @@ impl TelemetryProcessor {
                     actual_delay_ms: delay_ms.max(0.0),
                     detected_at: reception_time,
                     reported: false,
+                    re_request_sent: false,
                 };
                 
                 self.delayed_packets.push(delayed_info.clone());
@@ -624,11 +626,36 @@ impl TelemetryProcessor {
         candidates
     }
 
+    /// Get delayed packets ready for re-request with current wait age in ms.
+    pub fn collect_delayed_packet_uplink_candidates(&mut self) -> Vec<MissingPacketUplinkCandidate> {
+        let now = Utc::now();
+        let mut candidates = Vec::new();
+
+        for delayed in &mut self.delayed_packets {
+            if !delayed.re_request_sent {
+                let wait_ms = (now - delayed.detected_at).num_microseconds().unwrap_or(0) as f64 / 1000.0;
+                candidates.push(MissingPacketUplinkCandidate {
+                    packet_id: delayed.packet_id.clone(),
+                    wait_ms,
+                });
+            }
+        }
+
+        candidates
+    }
+
     /// Mark packet as re-requested
     pub fn mark_packet_as_rerequested(&mut self, packet_id: &str) {
         for missing in &mut self.missing_packets {
             if missing.packet_id == packet_id {
                 missing.re_request_sent = true;
+                break;
+            }
+        }
+
+        for delayed in &mut self.delayed_packets {
+            if delayed.packet_id == packet_id {
+                delayed.re_request_sent = true;
                 break;
             }
         }
