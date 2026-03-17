@@ -1326,9 +1326,6 @@ impl FaultManager {
         let mut hasher = DefaultHasher::new();
         fault_event.fault_type.hash(&mut hasher);
         fault_event.affected_systems.hash(&mut hasher);
-        // Add timestamp to hash for uniqueness
-        fault_event.timestamp.timestamp_nanos().hash(&mut hasher);
-
         format!("{:?}_{:016x}", fault_event.fault_type, hasher.finish())
     }
 

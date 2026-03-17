@@ -818,7 +818,6 @@ impl PerformanceTracker {
             
             // Requirement violations
             processing_violations_3ms: self.telemetry_metrics.processing_violations_3ms,
-            recent_violations_count: telemetry_violations_recent,
             total_performance_violations: self.performance_violations,
             
             // Packet timing and delay statistics
@@ -1013,18 +1012,10 @@ impl PerformanceTracker {
         // Identify performance issues
         let mut issues = Vec::new();
         
-        if stats.recent_violations_count > 0 {
+        if stats.processing_violations_3ms > 0 {
             issues.push(format!(
-                "Telemetry processing violations in last {}m: {} (historical total {})",
-                duration.num_minutes(),
-                stats.recent_violations_count,
+                "Telemetry processing violations: {}",
                 stats.processing_violations_3ms
-            ));
-        } else if stats.processing_violations_3ms > 0 {
-            issues.push(format!(
-                "Telemetry processing violations: historical total {} (none in last {}m)",
-                stats.processing_violations_3ms,
-                duration.num_minutes()
             ));
         }
         
@@ -1108,7 +1099,6 @@ pub struct PerformanceStats {
     
     // Requirement compliance
     pub processing_violations_3ms: u64,
-    pub recent_violations_count: u32,
     pub total_performance_violations: u64,
     
     // Timing and delay metrics

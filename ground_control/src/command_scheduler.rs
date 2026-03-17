@@ -408,86 +408,79 @@ impl CommandScheduler {
 
             match send_result {
                 Ok(send_result) => {
-                    // Use saturating arithmetic to prevent overflow
+                    let network_met = send_result.send_time_ms <= NETWORK_DEADLINE_THRESHOLD_MS;
+                    let deadline_met = send_result.success && send_result.deadline_met;
+                    let adherent = send_result.success && network_met && deadline_met;
+                    let mut reasons = Vec::new();
+
                     if urgent {
                         self.total_urgent = self.total_urgent.saturating_add(1);
+                    }
+                    if !send_result.success {
+                        reasons.push("dispatch_rejected_past_deadline");
+                    }
+                    if !network_met {
+                        reasons.push("network_send_over_2ms");
+                        self.network_violations = self.network_violations.saturating_add(1);
+                    }
+                    if !deadline_met {
+                        reasons.push("deadline_missed");
+                        self.deadline_violations = self.deadline_violations.saturating_add(1);
+                    }
 
-                        let network_met = send_result.send_time_ms <= NETWORK_DEADLINE_THRESHOLD_MS;
-                        let deadline_met = send_result.success && send_result.deadline_met;
-                        let adherent = send_result.success && network_met && deadline_met;
-                        let mut reasons = Vec::new();
+                    let reason = if reasons.is_empty() {
+                        "ok".to_string()
+                    } else {
+                        reasons.join(";")
+                    };
 
-                        if !send_result.success {
-                            reasons.push("dispatch_rejected_past_deadline");
-                        }
-                        if !network_met {
-                            reasons.push("network_send_over_2ms");
-                        }
-                        if !deadline_met {
-                            reasons.push("deadline_missed");
-                        }
+                    Self::append_deadline_operation_to_csv(
+                        &scheduled.command,
+                        urgent,
+                        send_result.send_time_ms,
+                        deadline_met,
+                        network_met,
+                        adherent,
+                        send_result.deadline_violation_ms,
+                        &reason,
+                    );
 
-                        if !network_met {
-                            self.network_violations = self.network_violations.saturating_add(1);
-                        }
-                        if !deadline_met {
-                            self.deadline_violations = self.deadline_violations.saturating_add(1);
-                        }
-
-                        let reason = if reasons.is_empty() {
-                            "ok".to_string()
-                        } else {
-                            reasons.join(";")
-                        };
-
-                        Self::append_deadline_operation_to_csv(
+                    if !deadline_met {
+                        Self::append_missed_deadline_to_csv(
                             &scheduled.command,
-                            true,
                             send_result.send_time_ms,
-                            deadline_met,
-                            network_met,
-                            adherent,
                             send_result.deadline_violation_ms,
                             &reason,
                         );
+                    }
 
-                        if !deadline_met {
-                            Self::append_missed_deadline_to_csv(
-                                &scheduled.command,
-                                send_result.send_time_ms,
-                                send_result.deadline_violation_ms,
-                                &reason,
-                            );
+                    if let Some(performance_tx) = perf_tx {
+                        if !network_met {
+                            let _ = performance_tx.send(PerformanceEvent {
+                                timestamp: Utc::now(),
+                                event_type: EventType::NetworkDeadlineViolation,
+                                duration_ms: send_result.send_time_ms,
+                                metadata: {
+                                    let mut metadata = HashMap::new();
+                                    metadata.insert("command_id".into(), scheduled.command.command_id.clone());
+                                    metadata.insert("send_time_ms".into(), format!("{:.3}", send_result.send_time_ms));
+                                    metadata.insert("threshold_ms".into(), format!("{:.1}", NETWORK_DEADLINE_THRESHOLD_MS));
+                                    metadata
+                                },
+                            }).await;
                         }
-
-                        if let Some(performance_tx) = perf_tx {
-                            if !network_met {
-                                let _ = performance_tx.send(PerformanceEvent {
-                                    timestamp: Utc::now(),
-                                    event_type: EventType::NetworkDeadlineViolation,
-                                    duration_ms: send_result.send_time_ms,
-                                    metadata: {
-                                        let mut metadata = HashMap::new();
-                                        metadata.insert("command_id".into(), scheduled.command.command_id.clone());
-                                        metadata.insert("send_time_ms".into(), format!("{:.3}", send_result.send_time_ms));
-                                        metadata.insert("threshold_ms".into(), format!("{:.1}", NETWORK_DEADLINE_THRESHOLD_MS));
-                                        metadata
-                                    },
-                                }).await;
-                            }
-                            if !deadline_met {
-                                let _ = performance_tx.send(PerformanceEvent {
-                                    timestamp: Utc::now(),
-                                    event_type: EventType::CommandDeadlineViolation,
-                                    duration_ms: send_result.deadline_violation_ms,
-                                    metadata: {
-                                        let mut metadata = HashMap::new();
-                                        metadata.insert("command_id".into(), scheduled.command.command_id.clone());
-                                        metadata.insert("deadline_violation_ms".into(), format!("{:.3}", send_result.deadline_violation_ms));
-                                        metadata
-                                    },
-                                }).await;
-                            }
+                        if !deadline_met {
+                            let _ = performance_tx.send(PerformanceEvent {
+                                timestamp: Utc::now(),
+                                event_type: EventType::CommandDeadlineViolation,
+                                duration_ms: send_result.deadline_violation_ms,
+                                metadata: {
+                                    let mut metadata = HashMap::new();
+                                    metadata.insert("command_id".into(), scheduled.command.command_id.clone());
+                                    metadata.insert("deadline_violation_ms".into(), format!("{:.3}", send_result.deadline_violation_ms));
+                                    metadata
+                                },
+                            }).await;
                         }
                     }
 

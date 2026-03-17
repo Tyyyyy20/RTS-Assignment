@@ -1,1 +1,3 @@
 ts,event,fault_id,fault_type,severity,description,response_time_ms,threshold_ms,outcome,recovery_mode,detected_at,resolved_at,resolution_ms
+2026-03-17T18:09:38.539064300+00:00,critical_alert,ThermalAnomaly_ff49631a23c53fb8,ThermalAnomaly,High,"Thermal sensor missed >3 consecutive cycles (either jitter>1ms or queueing failure)",168.305,100.000,response_time_exceeded,,2026-03-17T18:09:38.323843400+00:00,,
+2026-03-17T18:09:38.540185700+00:00,critical_alert_response,ThermalAnomaly_ff49631a23c53fb8,ThermalAnomaly,High,"Thermal sensor missed >3 consecutive cycles (either jitter>1ms or queueing failure)",168.305,100.000,responded,Cooldown,2026-03-17T18:09:38.323843400+00:00,,

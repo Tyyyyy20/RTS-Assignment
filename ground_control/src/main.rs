@@ -232,7 +232,7 @@ impl GroundControlSystem {
                                 let _ = performance_tx.send(PerformanceEvent {
                                     timestamp: timing.reception_time,
                                     event_type: EventType::PacketDelayed,
-                                    duration_ms: timing.jitter_ms,
+                                    duration_ms: timing.reception_drift_ms,
                                     metadata: {
                                         let mut m = std::collections::HashMap::new();
                                         m.insert("packet_id".into(), timing.packet_id.clone());
