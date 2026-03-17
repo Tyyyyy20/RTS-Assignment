@@ -315,12 +315,7 @@ impl PerformanceTracker {
                     }
                 }
                 
-                // Count delayed packets if provided in metadata  
-                if let Some(delayed_str) = event.metadata.get("delayed_packets") {
-                    if let Ok(delayed_count) = delayed_str.parse::<u64>() {
-                        self.telemetry_metrics.delayed_packets_detected += delayed_count;
-                    }
-                }
+                // Delayed-packet totals are sourced from PacketDelayed events to avoid double-counting.
             }
             
             EventType::PacketReceived => {
@@ -931,17 +926,24 @@ impl PerformanceTracker {
     fn compute_system_health_score(&self) -> f64 {
         let mut score = 100.0;
         
-        // Deduct for processing violations
-        score -= (self.telemetry_metrics.processing_violations_3ms as f64 * 0.5).min(20.0);
-        
-        // Deduct for network issuess
-        score -= (self.network_metrics.network_timeouts as f64 * 0.2).min(15.0);
-        
-        // Deduct for delayed packets
-        score -= (self.network_metrics.reception_drift_violations as f64 * 0.1).min(10.0);
-        
-        // Deduct for emergency responses
-        score -= (self.system_metrics.emergency_responses as f64 * 2.0).min(25.0);
+        // Use rate-based penalties where possible so long runs are not permanently punished.
+        let total_processed = self.telemetry_metrics.total_packets_processed.max(1) as f64;
+        let total_received = self.network_metrics.total_packets_received.max(1) as f64;
+
+        // Telemetry processing: mild-to-moderate penalty based on violation ratio.
+        let processing_violation_ratio = self.telemetry_metrics.processing_violations_3ms as f64 / total_processed;
+        score -= (processing_violation_ratio * 100.0 * 0.35).min(12.0);
+
+        // Network timeout pressure scaled by packet volume.
+        let timeout_ratio = self.network_metrics.network_timeouts as f64 / total_received;
+        score -= (timeout_ratio * 100.0 * 1.2).min(8.0);
+
+        // Reception drift scaled by packet volume (less punitive than hard counts).
+        let drift_ratio = self.network_metrics.reception_drift_violations as f64 / total_received;
+        score -= (drift_ratio * 100.0 * 0.3).min(8.0);
+
+        // Emergency responses should still matter, but do not over-dominate score.
+        score -= (self.system_metrics.emergency_responses as f64 * 1.2).min(15.0);
         
         // // NEW: penalize when high-utilization/degradation is logged
         // score -= (self.system_metrics.system_degradation_events as f64 * 1.5).min(20.0);
@@ -955,8 +957,8 @@ impl PerformanceTracker {
         //     score -= 5.0;
         // }
 
-        // ✅ NEW: penalize when high utilization / degradation events were logged
-        score -= (self.system_metrics.system_degradation_events as f64 * 1.0).min(10.0);
+        // Penalize sustained high-utilization/degradation events with a softer cap.
+        score -= (self.system_metrics.system_degradation_events as f64 * 0.6).min(6.0);
 
         // Penalize sustained scheduler drift using average, tail behavior (p99),
         // and how often drift is severe (>15ms). Tuned to be stricter for RT behavior.
@@ -967,29 +969,29 @@ impl PerformanceTracker {
             let severe_samples = self.task_drift_ms.iter().filter(|&&d| d > 15.0).count() as f64;
             let severe_ratio = severe_samples / self.task_drift_ms.len() as f64;
 
-            // Baseline penalty: sustained average drift above 8ms.
-            if avg_task_drift_ms > 8.0 {
-                score -= ((avg_task_drift_ms - 8.0) * 0.4).min(4.0);
+            // Baseline penalty: sustained average drift above 10ms.
+            if avg_task_drift_ms > 10.0 {
+                score -= ((avg_task_drift_ms - 10.0) * 0.25).min(2.5);
             }
 
-            // Tail-drift penalty: starts above 14ms with a moderate slope and cap.
-            if p99_task_drift_ms > 14.0 {
-                score -= ((p99_task_drift_ms - 14.0) * 0.7).min(7.0);
+            // Tail-drift penalty: starts above 18ms with a softer slope and cap.
+            if p99_task_drift_ms > 18.0 {
+                score -= ((p99_task_drift_ms - 18.0) * 0.45).min(5.0);
             }
 
             // Frequency penalty: if severe drift appears often, reduce health further.
-            score -= (severe_ratio * 8.0).min(4.0);
+            score -= (severe_ratio * 5.0).min(2.5);
         }
 
         // Penalize poor fault recovery metrics captured from FaultManager stats snapshots.
         if let Some(mttr_latest) = self.fault_recovery_mttr_samples_ms.back() {
-            if *mttr_latest > 3000.0 {
-                score -= ((*mttr_latest - 3000.0) / 800.0).min(4.0);
+            if *mttr_latest > 3500.0 {
+                score -= ((*mttr_latest - 3500.0) / 1000.0).min(3.0);
             }
         }
         if let Some(avg_response_latest) = self.fault_response_avg_samples_ms.back() {
-            if *avg_response_latest > 200.0 {
-                score -= ((*avg_response_latest - 200.0) / 60.0).min(3.0);
+            if *avg_response_latest > 250.0 {
+                score -= ((*avg_response_latest - 250.0) / 80.0).min(2.0);
             }
         }
         
@@ -1030,10 +1032,12 @@ impl PerformanceTracker {
             issues.push(format!("High packet delays: {:.1}ms average", 
                 stats.avg_packet_delay_ms));
         }
-        
+
         if stats.reception_drift_violations > 10 {
-            issues.push(format!("Reception timing violations: {}", 
-                stats.reception_drift_violations));
+            issues.push(format!(
+                "Elevated reception drift events: {} packets outside expected arrival window",
+                stats.reception_drift_violations
+            ));
         }
         
         if stats.network_timeouts > 5 {

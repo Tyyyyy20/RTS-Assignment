@@ -25,6 +25,7 @@ use shared_protocol::{
 const MAX_SEND_TIMES_HISTORY: usize = 1000;
 const NETWORK_DEADLINE_THRESHOLD_MS: f64 = 2.0;
 const DEADLINE_LOG_PATH: &str = "logs/ground_control_deadline_ops.csv";
+const MISSED_DEADLINE_LOG_PATH: &str = "logs/ground_control_missed_deadlines.csv";
 
 #[derive(Debug, Clone)]
 pub struct EnhancedCommandSchedulerStats {
@@ -76,6 +77,7 @@ pub struct CommandScheduler {
 impl CommandScheduler {
     pub fn new() -> Self {
         Self::initialize_deadline_operations_csv();
+        Self::initialize_missed_deadline_csv();
 
         Self {
             queue: VecDeque::new(),
@@ -233,8 +235,69 @@ impl CommandScheduler {
         }
     }
 
+    fn initialize_missed_deadline_csv() {
+        use std::fs::{self, OpenOptions};
+        use std::io::Write;
+
+        let _ = fs::create_dir_all("logs");
+
+        if !std::path::Path::new(MISSED_DEADLINE_LOG_PATH).exists() {
+            match OpenOptions::new().create(true).append(true).open(MISSED_DEADLINE_LOG_PATH) {
+                Ok(mut csv_file) => {
+                    let _ = writeln!(
+                        csv_file,
+                        "ts,command_id,command_type,target_system,priority,send_time_ms,deadline_violation_ms,reason"
+                    );
+                }
+                Err(write_error) => {
+                    warn!("Unable To Initialize ground_control_missed_deadlines.csv: {}", write_error);
+                }
+            }
+        }
+    }
+
+    fn append_missed_deadline_to_csv(
+        command: &Command,
+        send_time_ms: f64,
+        deadline_violation_ms: f64,
+        reason: &str,
+    ) {
+        use std::fs::{self, OpenOptions};
+        use std::io::Write;
+
+        let _ = fs::create_dir_all("logs");
+        let should_write_header = !std::path::Path::new(MISSED_DEADLINE_LOG_PATH).exists();
+
+        match OpenOptions::new().create(true).append(true).open(MISSED_DEADLINE_LOG_PATH) {
+            Ok(mut csv_file) => {
+                if should_write_header {
+                    let _ = writeln!(
+                        csv_file,
+                        "ts,command_id,command_type,target_system,priority,send_time_ms,deadline_violation_ms,reason"
+                    );
+                }
+
+                let _ = writeln!(
+                    csv_file,
+                    "{},{},{:?},{:?},{},{:.3},{:.3},{}",
+                    Utc::now().to_rfc3339(),
+                    command.command_id,
+                    command.command_type,
+                    command.target_system,
+                    command.priority as u8,
+                    send_time_ms,
+                    deadline_violation_ms,
+                    reason,
+                );
+            }
+            Err(write_error) => {
+                warn!("Unable To Append ground_control_missed_deadlines.csv: {}", write_error);
+            }
+        }
+    }
+
     /// Map a `CommandType` to the interlock category used by FaultManager (B2.3, S5).
-    /// These strings must match the `blocked_command_types` used when activating safety interlocks.
+    /// These strings must match the `bloked_command_types` used when activating safety interlocks.
     fn map_command_type_to_interlock_category(ct: CommandType) -> &'static str {
         match ct {
             CommandType::ThermalControl  => "heating",
@@ -371,6 +434,12 @@ impl CommandScheduler {
                             self.deadline_violations = self.deadline_violations.saturating_add(1);
                         }
 
+                        let reason = if reasons.is_empty() {
+                            "ok".to_string()
+                        } else {
+                            reasons.join(";")
+                        };
+
                         Self::append_deadline_operation_to_csv(
                             &scheduled.command,
                             true,
@@ -379,12 +448,17 @@ impl CommandScheduler {
                             network_met,
                             adherent,
                             send_result.deadline_violation_ms,
-                            &if reasons.is_empty() {
-                                "ok".to_string()
-                            } else {
-                                reasons.join(";")
-                            },
+                            &reason,
                         );
+
+                        if !deadline_met {
+                            Self::append_missed_deadline_to_csv(
+                                &scheduled.command,
+                                send_result.send_time_ms,
+                                send_result.deadline_violation_ms,
+                                &reason,
+                            );
+                        }
 
                         if let Some(performance_tx) = perf_tx {
                             if !network_met {

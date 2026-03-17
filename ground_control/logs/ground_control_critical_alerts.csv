@@ -1,0 +1,1 @@
+ts,event,fault_id,fault_type,severity,description,response_time_ms,threshold_ms,outcome,recovery_mode,detected_at,resolved_at,resolution_ms

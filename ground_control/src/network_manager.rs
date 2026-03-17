@@ -373,14 +373,12 @@ impl NetworkManager {
     /// Get current reception drift statistics
     pub async fn collect_drift_stats(&self) -> DriftStats {
         let drift_history = self.drift_history.lock().await;
-        let sequence_tracker = self.packet_sequence_tracker.lock().await;
 
         if drift_history.is_empty() {
             return DriftStats {
                 avg_drift_ms: 0.0,
                 max_drift_ms: 0.0,
                 drift_violations: 0,
-                total_packets_analyzed: 0,
             };
         }
 
@@ -389,7 +387,6 @@ impl NetworkManager {
             avg_drift_ms: total_drift / drift_history.len() as f64,
             max_drift_ms: drift_history.iter().map(|d| d.drift_ms.abs()).fold(0.0, f64::max),
             drift_violations: drift_history.iter().filter(|d| d.drift_ms.abs() > 25.0).count() as u32,
-            total_packets_analyzed: sequence_tracker.values().map(|s| s.packets_received).sum(),
         }
     }
 
@@ -565,7 +562,6 @@ pub struct DriftStats {
     pub avg_drift_ms: f64,
     pub max_drift_ms: f64,
     pub drift_violations: u32,
-    pub total_packets_analyzed: u64,
 }
 
 /// Result of a deadline-aware send operation

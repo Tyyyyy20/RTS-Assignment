@@ -650,13 +650,15 @@ impl GroundControlSystem {
                 info!("Command Scheduler Task Online (0.5ms Resolution)");
                 let mut itv = tokio::time::interval(Duration::from_micros(500));
                 let mut tick: u64 = 0;
-                let mut last_check = std::time::Instant::now();
                 let scheduler_start = std::time::Instant::now();
                 let mut last_uplink_sample_at: Option<std::time::Instant> = None;
                 let mut severe_drift_window_started_at = std::time::Instant::now();
                 let mut severe_drift_sum_ms: f64 = 0.0;
                 let mut severe_drift_count: u64 = 0;
                 let mut severe_drift_max_ms: f64 = 0.0;
+                let mut last_reported_network_violations: u64 = 0;
+                let mut last_reported_deadline_violations: u64 = 0;
+                let mut last_reported_total_urgent: u64 = 0;
 
                 while *is_running.lock().await {
                     itv.tick().await;
@@ -818,16 +820,25 @@ impl GroundControlSystem {
                         let sched = command_scheduler.lock().await;
                         let rep = sched.get_unified_deadline_report();
                         if rep.network_violations > 0 || rep.deadline_violations > 0 {
-                            let dt = last_check.elapsed().as_millis();
-                            warn!("Recent Deadline Violations Over {dt}ms: Net={}/{} Total={}/{} (Net {:.1}%, Overall {:.1}%)",
-                                  rep.network_violations, rep.total_urgent_commands,
-                                  rep.deadline_violations, rep.total_urgent_commands,
-                                  rep.network_adherence_rate, rep.adherence_rate);
+                            let has_changed = rep.network_violations != last_reported_network_violations
+                                || rep.deadline_violations != last_reported_deadline_violations
+                                || rep.total_urgent_commands != last_reported_total_urgent;
+                            let should_log = has_changed;
+
+                            if should_log {
+                                warn!("Deadline Violations Snapshot: Net={}/{} Total={}/{} (Net {:.1}%, Overall {:.1}%)",
+                                      rep.network_violations, rep.total_urgent_commands,
+                                      rep.deadline_violations, rep.total_urgent_commands,
+                                      rep.network_adherence_rate, rep.adherence_rate);
+                                last_reported_network_violations = rep.network_violations;
+                                last_reported_deadline_violations = rep.deadline_violations;
+                                last_reported_total_urgent = rep.total_urgent_commands;
+                            }
+
                             if rep.avg_network_send_time > 1.8 {
                                 error!("Average Network Send Time Approaching 2ms Threshold: {:.3}ms", rep.avg_network_send_time);
                             }
                         }
-                        last_check = std::time::Instant::now();
                     }
 
                     if tick % 1000 == 0 {
@@ -900,28 +911,28 @@ impl GroundControlSystem {
         let final_report = performance_tracker.build_performance_report(chrono::Duration::minutes(5));
         let final_stats = &final_report.performance_stats;
         let fault_stats = self.fault_manager.lock().await.get_stats();
+        let deadline_report = self.command_scheduler.lock().await.get_unified_deadline_report();
         let drift = self.network_manager.collect_drift_stats().await;
+        let runtime = Utc::now() - self.system_start_time;
+        let runtime_secs = runtime.num_seconds().max(0);
+        let runtime_mins = runtime_secs / 60;
+        let runtime_rem_secs = runtime_secs % 60;
 
         info!("=== FINAL GROUND CONTROL SUMMARY ===");
-        info!("Total Runtime: {:?}", Utc::now() - self.system_start_time);
+        info!("Total Runtime: {}m {}s", runtime_mins, runtime_rem_secs);
         info!("Telemetry Packets Processed: {}", final_stats.total_packets_processed);
         info!("Average Processing Time: {:.3}ms (P95 {:.3}ms, P99 {:.3}ms)", final_stats.avg_processing_time_ms, final_stats.p95_processing_time_ms, final_stats.p99_processing_time_ms);
         info!("Processing Violations Above 3ms: {}", final_stats.processing_violations_3ms);
         info!("Packets Received From Network: {}", final_stats.total_packets_received);
         info!("Average Reception Latency: {:.1}ms", final_stats.avg_reception_latency_ms);
         info!("Late Arrival Events: {} (Average Delay {:.1}ms)", final_stats.delayed_packets_total, final_stats.avg_packet_delay_ms);
-        info!("Reception Drift Violations: {}", final_stats.reception_drift_violations);
         info!("Retransmission Requests Issued: {}", final_stats.retransmission_requests);
         info!("Network Timeout Events: {}", final_stats.network_timeouts);
         info!(
-            "Network Performance Report: TotalAnalyzed={} AvgDrift={:.1}ms MaxDrift={:.1}ms DriftViolations={} AvgDelay={:.1}ms Delayed={} Violations3ms={}",
-            drift.total_packets_analyzed,
-            drift.avg_drift_ms,
-            drift.max_drift_ms,
+            "Network Drift Analytics: Violations={} AvgDrift={:.1}ms MaxDrift={:.1}ms",
             drift.drift_violations,
-            final_stats.avg_packet_delay_ms,
-            final_stats.delayed_packets_total,
-            final_stats.processing_violations_3ms
+            drift.avg_drift_ms,
+            drift.max_drift_ms
         );
         info!(
             "Uplink Jitter: P95 {:.3}ms (P99 {:.3}ms, max {:.3}ms) | Avg Interval {:.3}ms",
@@ -988,6 +999,11 @@ impl GroundControlSystem {
             fault_stats.avg_fault_resolution_time_ms,
             fault_stats.mttr_avg_ms,
             fault_stats.mtbf_avg_ms
+        );
+        info!(
+            "Missed Deadlines: {} of {} urgent commands",
+            deadline_report.deadline_violations,
+            deadline_report.total_urgent_commands
         );
         info!("System Health Score: {:.1}/100 | Uptime {:.2}%", final_stats.system_health_score, final_stats.uptime_percentage);
 
