@@ -17,6 +17,7 @@ use shared_protocol::{
 // Constants for configuration
 const MAX_SEND_TIMES_HISTORY: usize = 1000;
 const NETWORK_DEADLINE_THRESHOLD_MS: f64 = 2.0;
+const DEADLINE_LOG_PATH: &str = "logs/ground_control_deadline_ops.csv";
 
 #[derive(Debug, Clone)]
 pub struct EnhancedCommandSchedulerStats {
@@ -67,6 +68,8 @@ pub struct CommandScheduler {
 
 impl CommandScheduler {
     pub fn new() -> Self {
+        Self::initialize_deadline_operations_csv();
+
         Self {
             queue: VecDeque::new(),
             dispatched: 0,
@@ -152,6 +155,75 @@ impl CommandScheduler {
             self.send_times_ms.pop_front();
         }
         self.send_times_ms.push_back(send_time_ms);
+    }
+
+    fn initialize_deadline_operations_csv() {
+        use std::fs::{self, OpenOptions};
+        use std::io::Write;
+
+        let _ = fs::create_dir_all("logs");
+
+        if !std::path::Path::new(DEADLINE_LOG_PATH).exists() {
+            match OpenOptions::new().create(true).append(true).open(DEADLINE_LOG_PATH) {
+                Ok(mut csv_file) => {
+                    let _ = writeln!(
+                        csv_file,
+                        "ts,command_id,command_type,target_system,priority,is_urgent,send_time_ms,deadline_met,network_met,adherent,deadline_violation_ms,reason"
+                    );
+                }
+                Err(write_error) => {
+                    warn!("Unable To Initialize ground_control_deadline_ops.csv: {}", write_error);
+                }
+            }
+        }
+    }
+
+    fn append_deadline_operation_to_csv(
+        command: &Command,
+        is_urgent: bool,
+        send_time_ms: f64,
+        deadline_met: bool,
+        network_met: bool,
+        adherent: bool,
+        deadline_violation_ms: f64,
+        reason: &str,
+    ) {
+        use std::fs::{self, OpenOptions};
+        use std::io::Write;
+
+        let _ = fs::create_dir_all("logs");
+        let should_write_header = !std::path::Path::new(DEADLINE_LOG_PATH).exists();
+
+        match OpenOptions::new().create(true).append(true).open(DEADLINE_LOG_PATH) {
+            Ok(mut csv_file) => {
+                if should_write_header {
+                    let _ = writeln!(
+                        csv_file,
+                        "ts,command_id,command_type,target_system,priority,is_urgent,send_time_ms,deadline_met,network_met,adherent,deadline_violation_ms,reason"
+                    );
+                }
+
+                let _ = writeln!(
+                    csv_file,
+                    "{},{},{:?},{:?},{},{},{:.3},{},{},{},{:.3},{}",
+                    Utc::now().to_rfc3339(),
+                    command.command_id,
+                    command.command_type,
+                    command.target_system,
+                    command.priority as u8,
+                    is_urgent,
+                    send_time_ms,
+                    deadline_met,
+                    network_met,
+                    adherent,
+                    deadline_violation_ms,
+                    reason,
+                );
+            }
+            Err(write_error) => {
+                warn!("Unable To Append ground_control_deadline_ops.csv: {}", write_error);
+            }
+        }
     }
 
     /// Map a `CommandType` to the interlock category string used in `FaultManager`.
@@ -267,20 +339,91 @@ impl CommandScheduler {
             match send_result {
                 Ok(send_result) => {
                     // Use saturating arithmetic to prevent overflow
-                    self.dispatched = self.dispatched.saturating_add(1);
-                    
                     if urgent {
-                        self.urgent_dispatched = self.urgent_dispatched.saturating_add(1);
                         self.total_urgent = self.total_urgent.saturating_add(1);
-                        
-                        if send_result.send_time_ms > NETWORK_DEADLINE_THRESHOLD_MS { 
+
+                        let network_met = send_result.send_time_ms <= NETWORK_DEADLINE_THRESHOLD_MS;
+                        let deadline_met = send_result.success && send_result.deadline_met;
+                        let adherent = send_result.success && network_met && deadline_met;
+                        let mut reasons = Vec::new();
+
+                        if !send_result.success {
+                            reasons.push("dispatch_rejected_past_deadline");
+                        }
+                        if !network_met {
+                            reasons.push("network_send_over_2ms");
+                        }
+                        if !deadline_met {
+                            reasons.push("deadline_missed");
+                        }
+
+                        if !network_met {
                             self.network_violations = self.network_violations.saturating_add(1);
                         }
-                        if !send_result.deadline_met { 
+                        if !deadline_met {
                             self.deadline_violations = self.deadline_violations.saturating_add(1);
                         }
+
+                        Self::append_deadline_operation_to_csv(
+                            &scheduled.command,
+                            true,
+                            send_result.send_time_ms,
+                            deadline_met,
+                            network_met,
+                            adherent,
+                            send_result.deadline_violation_ms,
+                            &if reasons.is_empty() {
+                                "ok".to_string()
+                            } else {
+                                reasons.join(";")
+                            },
+                        );
+
+                        if let Some(performance_tx) = perf_tx {
+                            if !network_met {
+                                let _ = performance_tx.send(PerformanceEvent {
+                                    timestamp: Utc::now(),
+                                    event_type: EventType::NetworkDeadlineViolation,
+                                    duration_ms: send_result.send_time_ms,
+                                    metadata: {
+                                        let mut metadata = HashMap::new();
+                                        metadata.insert("command_id".into(), scheduled.command.command_id.clone());
+                                        metadata.insert("send_time_ms".into(), format!("{:.3}", send_result.send_time_ms));
+                                        metadata.insert("threshold_ms".into(), format!("{:.1}", NETWORK_DEADLINE_THRESHOLD_MS));
+                                        metadata
+                                    },
+                                }).await;
+                            }
+                            if !deadline_met {
+                                let _ = performance_tx.send(PerformanceEvent {
+                                    timestamp: Utc::now(),
+                                    event_type: EventType::CommandDeadlineViolation,
+                                    duration_ms: send_result.deadline_violation_ms,
+                                    metadata: {
+                                        let mut metadata = HashMap::new();
+                                        metadata.insert("command_id".into(), scheduled.command.command_id.clone());
+                                        metadata.insert("deadline_violation_ms".into(), format!("{:.3}", send_result.deadline_violation_ms));
+                                        metadata
+                                    },
+                                }).await;
+                            }
+                        }
                     }
-                    
+
+                    if !send_result.success {
+                        error!(
+                            "Command {} missed deadline before dispatch (violation {:.3}ms)",
+                            scheduled.command.command_id,
+                            send_result.deadline_violation_ms
+                        );
+                        continue;
+                    }
+
+                    self.dispatched = self.dispatched.saturating_add(1);
+                    if urgent {
+                        self.urgent_dispatched = self.urgent_dispatched.saturating_add(1);
+                    }
+
                     self.record_send_time_sample(send_result.send_time_ms);
                     dispatched_commands.push(scheduled.command.clone());
                     

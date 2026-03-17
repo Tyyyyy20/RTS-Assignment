@@ -8,6 +8,7 @@ use tokio::net::UdpSocket as TokioUdpSocket;
 use tokio::time::timeout;
 use tokio::sync::Mutex;
 use tracing::{info, warn, error, debug};
+use tracing::Level;
 use anyhow::{Result, Context};
 use chrono::{DateTime, Utc};
 use std::collections::{HashMap, VecDeque};
@@ -204,18 +205,20 @@ impl NetworkManager {
         }
         let frame_bytes = &udp_frame_buffer[4..4 + len];
 
-        // Optional: inspect header fields for logs
-        if let Ok(frame) = serde_json::from_slice::<EncryptedFrame>(frame_bytes) {
-            debug!(
-                event = "rx_frame",
-                pkt_type = ?frame.header.packet_type,
-                seq      = frame.header.sequence_number,
-                src      = ?frame.header.source,
-                dst      = ?frame.header.destination,
-                key_id   = frame.header.key_id,
-                ct_len   = frame.ciphertext.len(),
-                "GC received frame"
-            );
+        // Optional: inspect frame headers only when debug logging is enabled.
+        if tracing::enabled!(Level::DEBUG) {
+            if let Ok(frame) = serde_json::from_slice::<EncryptedFrame>(frame_bytes) {
+                debug!(
+                    event = "rx_frame",
+                    pkt_type = ?frame.header.packet_type,
+                    seq      = frame.header.sequence_number,
+                    src      = ?frame.header.source,
+                    dst      = ?frame.header.destination,
+                    key_id   = frame.header.key_id,
+                    ct_len   = frame.ciphertext.len(),
+                    "GC received frame"
+                );
+            }
         }
 
         // ---- Decrypt (measure decode time too)
@@ -249,6 +252,7 @@ impl NetworkManager {
     /// Calculate comprehensive reception timing metrics
     async fn compute_reception_timing(&self, packet: &CommunicationPacket, reception_time: DateTime<Utc>) -> ReceptionTiming {
         let packet_type_s = format!("{:?}", packet.header.packet_type);
+        let packet_type_key = packet_type_s.to_ascii_lowercase();
         let packet_id = packet.header.packet_id.clone();
 
         // trackers
@@ -257,7 +261,7 @@ impl NetworkManager {
 
         let expected_interval = {
             let intervals = self.expected_intervals.lock().await;
-            intervals.get(&packet_type_s).copied().unwrap_or(100.0)
+            intervals.get(&packet_type_key).copied().unwrap_or(100.0)
         };
 
         // Initialize schedule if first packet of this type

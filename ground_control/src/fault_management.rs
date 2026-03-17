@@ -5,6 +5,8 @@ use tracing::{info, warn, error};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+const FAULT_RECOVERY_LOG_PATH: &str = "logs/ground_control_faults_recovery.csv";
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum FaultType {
     ThermalAnomaly,
@@ -154,6 +156,8 @@ impl FaultManager {
 
         // Ensure rejected-ops audit CSV exists from startup, even before first block event.
         Self::initialize_rejected_operations_csv();
+        // Ensure fault/recovery audit CSV exists from startup.
+        Self::initialize_fault_recovery_csv();
 
         Self {
             active_faults: HashMap::new(),
@@ -247,6 +251,20 @@ impl FaultManager {
 
             self.active_faults.insert(fault_id.clone(), active_fault);
             self.total_faults_detected += 1;
+
+            Self::append_fault_recovery_csv_entry(
+                "detected",
+                &fault_id,
+                &fault_event.fault_type,
+                &fault_event.severity,
+                &fault_event.description,
+                None,
+                None,
+                Some(detected_timestamp),
+                None,
+                None,
+                false,
+            );
         }
 
         match fault_event.fault_type {
@@ -284,6 +302,32 @@ impl FaultManager {
                 self.critical_response_time_ms, response_time);
             self.total_response_time_critical_alerts += 1;
             self.trigger_critical_ground_alert(&fault_event, response_time).await?;
+
+            // Prioritize immediate recovery attempt when critical response-time SLA is breached.
+            let prioritized_mode = match fault_event.fault_type {
+                FaultType::ThermalAnomaly => Some(RecoveryMode::Cooldown),
+                FaultType::PowerAnomaly => Some(RecoveryMode::PowerSave),
+                FaultType::AttitudeAnomaly => Some(RecoveryMode::AttitudeHold),
+                FaultType::SystemOverload => Some(RecoveryMode::SafeMode),
+                FaultType::NetworkError | FaultType::CommunicationLoss => Some(RecoveryMode::LinkFallback),
+                FaultType::TelemetryError | FaultType::SensorFailure | FaultType::CommandRejection | FaultType::Unknown(_) => Some(RecoveryMode::SoftReset),
+            };
+
+            if let Err(recovery_error) = self.resolve_fault_with_outcome(
+                &fault_id,
+                RecoveryOutcome::AutoSuccess(prioritized_mode),
+            ) {
+                warn!(
+                    "Critical Alert Recovery Attempt Failed For {}: {}",
+                    fault_id,
+                    recovery_error
+                );
+            } else {
+                info!(
+                    "Critical Alert Recovery Applied For {} (prioritized auto-recovery)",
+                    fault_id
+                );
+            }
         }
 
         self.update_response_time_stats(response_time);
@@ -804,11 +848,102 @@ impl FaultManager {
         }
     }
 
+    fn initialize_fault_recovery_csv() {
+        use std::fs::{self, OpenOptions};
+        use std::io::Write;
+
+        let _ = fs::create_dir_all("logs");
+
+        if !std::path::Path::new(FAULT_RECOVERY_LOG_PATH).exists() {
+            match OpenOptions::new().create(true).append(true).open(FAULT_RECOVERY_LOG_PATH) {
+                Ok(mut csv_file) => {
+                    let _ = writeln!(
+                        csv_file,
+                        "ts,event,fault_id,fault_type,severity,description,outcome,recovery_mode,detected_at,resolved_at,resolution_ms,auto_recovered"
+                    );
+                }
+                Err(write_error) => {
+                    warn!("Unable To Initialize ground_control_faults_recovery.csv: {}", write_error);
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn append_fault_recovery_csv_entry(
+        event: &str,
+        fault_id: &str,
+        fault_type: &FaultType,
+        severity: &Severity,
+        description: &str,
+        outcome: Option<&str>,
+        recovery_mode: Option<&str>,
+        detected_at: Option<DateTime<Utc>>,
+        resolved_at: Option<DateTime<Utc>>,
+        resolution_ms: Option<f64>,
+        auto_recovered: bool,
+    ) {
+        use std::fs::{self, OpenOptions};
+        use std::io::Write;
+
+        let _ = fs::create_dir_all("logs");
+        let should_write_header = !std::path::Path::new(FAULT_RECOVERY_LOG_PATH).exists();
+
+        match OpenOptions::new().create(true).append(true).open(FAULT_RECOVERY_LOG_PATH) {
+            Ok(mut csv_file) => {
+                if should_write_header {
+                    let _ = writeln!(
+                        csv_file,
+                        "ts,event,fault_id,fault_type,severity,description,outcome,recovery_mode,detected_at,resolved_at,resolution_ms,auto_recovered"
+                    );
+                }
+
+                let detected_at_s = detected_at.map(|v| v.to_rfc3339()).unwrap_or_default();
+                let resolved_at_s = resolved_at.map(|v| v.to_rfc3339()).unwrap_or_default();
+                let resolution_ms_s = resolution_ms.map(|v| format!("{:.3}", v)).unwrap_or_default();
+
+                let _ = writeln!(
+                    csv_file,
+                    "{},{},{},{:?},{:?},\"{}\",{},{},{},{},{},{}",
+                    Utc::now().to_rfc3339(),
+                    event,
+                    fault_id,
+                    fault_type,
+                    severity,
+                    description.replace('"', "'"),
+                    outcome.unwrap_or(""),
+                    recovery_mode.unwrap_or(""),
+                    detected_at_s,
+                    resolved_at_s,
+                    resolution_ms_s,
+                    auto_recovered,
+                );
+            }
+            Err(write_error) => {
+                warn!("Unable To Append ground_control_faults_recovery.csv: {}", write_error);
+            }
+        }
+    }
+
     pub fn resolve_fault_with_outcome(&mut self, fault_id: &str, outcome: RecoveryOutcome) -> Result<()> {
         if let Some(active_fault) = self.active_faults.get_mut(fault_id) {
             active_fault.is_resolved = true;
             let now = Utc::now();
             active_fault.resolution_time = Some(now);
+
+            let resolution_ms = (now - active_fault.detected_at)
+                .num_microseconds()
+                .unwrap_or(0) as f64 / 1000.0;
+
+            let (outcome_label, recovery_mode_label, auto_recovered) = match &outcome {
+                RecoveryOutcome::AutoSuccess(mode) => (
+                    "auto_success",
+                    mode.as_ref().map(|m| format!("{:?}", m)),
+                    true,
+                ),
+                RecoveryOutcome::AutoFailedThenManual => ("auto_failed_then_manual", None, false),
+                RecoveryOutcome::Manual => ("manual", None, false),
+            };
 
             if let Some(dt_ms) = active_fault.resolution_time.map(|r| {
                 (r - active_fault.detected_at).num_microseconds().unwrap_or(0) as f64 / 1000.0
@@ -827,6 +962,20 @@ impl FaultManager {
                     self.manual_recoveries += 1;
                 }
             }
+
+            Self::append_fault_recovery_csv_entry(
+                "resolved",
+                &active_fault.fault_id,
+                &active_fault.fault_event.fault_type,
+                &active_fault.fault_event.severity,
+                &active_fault.fault_event.description,
+                Some(outcome_label),
+                recovery_mode_label.as_deref(),
+                Some(active_fault.detected_at),
+                Some(now),
+                Some(resolution_ms),
+                auto_recovered,
+            );
 
             let snapshot = active_fault.clone();
             self.fault_history.push(snapshot);

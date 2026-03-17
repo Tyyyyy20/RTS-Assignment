@@ -439,6 +439,10 @@ impl GroundControlSystem {
                 info!("Missing-Packet Re-Request Task Online");
                 let mut itv = interval(Duration::from_millis(650));
                 let mut rr_count = 0u64;
+                let mut elevated_window_started_at = std::time::Instant::now();
+                let mut elevated_count: u64 = 0;
+                let mut elevated_sum_ms: f64 = 0.0;
+                let mut elevated_max_ms: f64 = 0.0;
 
                 while *is_running.lock().await {
                     itv.tick().await;
@@ -479,6 +483,12 @@ impl GroundControlSystem {
                                 let uplink_send_ms = send_started.elapsed().as_secs_f64() * 1000.0;
                                 let packet_to_uplink_ms = candidate.wait_ms + uplink_send_ms;
 
+                                if packet_to_uplink_ms > 200.0 {
+                                    elevated_count += 1;
+                                    elevated_sum_ms += packet_to_uplink_ms;
+                                    elevated_max_ms = elevated_max_ms.max(packet_to_uplink_ms);
+                                }
+
                                 let _ = performance_tx.send(PerformanceEvent {
                                     timestamp: Utc::now(),
                                     event_type: EventType::PacketRetransmissionRequested,
@@ -517,6 +527,23 @@ impl GroundControlSystem {
                                 }).await;
                             }
                         }
+                    }
+
+                    if elevated_window_started_at.elapsed() >= Duration::from_secs(10) {
+                        if elevated_count > 0 {
+                            let elevated_avg_ms = elevated_sum_ms / elevated_count as f64;
+                            warn!(
+                                "Packet-To-Uplink Latency Elevated (10s): Samples={} Avg={:.3}ms Max={:.3}ms Threshold>200ms",
+                                elevated_count,
+                                elevated_avg_ms,
+                                elevated_max_ms
+                            );
+                        }
+
+                        elevated_window_started_at = std::time::Instant::now();
+                        elevated_count = 0;
+                        elevated_sum_ms = 0.0;
+                        elevated_max_ms = 0.0;
                     }
                 }
             })
@@ -855,7 +882,8 @@ impl GroundControlSystem {
         tokio::time::sleep(Duration::from_secs(1)).await;
 
         let performance_tracker = self.performance_tracker.lock().await;
-        let final_stats = performance_tracker.snapshot_current_stats();
+        let final_report = performance_tracker.build_performance_report(chrono::Duration::minutes(5));
+        let final_stats = &final_report.performance_stats;
         let fault_stats = self.fault_manager.lock().await.get_stats();
         let drift = self.network_manager.collect_drift_stats().await;
 
@@ -947,6 +975,24 @@ impl GroundControlSystem {
             fault_stats.mtbf_avg_ms
         );
         info!("System Health Score: {:.1}/100 | Uptime {:.2}%", final_stats.system_health_score, final_stats.uptime_percentage);
+
+        if final_report.identified_issues.is_empty() {
+            info!("Identified Issues (Last 5m): none");
+        } else {
+            warn!("Identified Issues (Last 5m):");
+            for issue in &final_report.identified_issues {
+                warn!(" - {}", issue);
+            }
+        }
+
+        if final_report.recommendations.is_empty() {
+            info!("Recommendations: none");
+        } else {
+            info!("Recommendations:");
+            for recommendation in &final_report.recommendations {
+                info!(" - {}", recommendation);
+            }
+        }
     }
 }
 

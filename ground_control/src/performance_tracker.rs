@@ -1005,9 +1005,19 @@ impl PerformanceTracker {
         // Identify performance issues
         let mut issues = Vec::new();
         
-        if stats.processing_violations_3ms > 0 {
-            issues.push(format!("Telemetry processing violations: {} total, {} recent", 
-                stats.processing_violations_3ms, stats.recent_violations_count));
+        if stats.recent_violations_count > 0 {
+            issues.push(format!(
+                "Telemetry processing violations in last {}m: {} (historical total {})",
+                duration.num_minutes(),
+                stats.recent_violations_count,
+                stats.processing_violations_3ms
+            ));
+        } else if stats.processing_violations_3ms > 0 {
+            issues.push(format!(
+                "Telemetry processing violations: historical total {} (none in last {}m)",
+                stats.processing_violations_3ms,
+                duration.num_minutes()
+            ));
         }
         
         if stats.avg_packet_delay_ms > 100.0 {
