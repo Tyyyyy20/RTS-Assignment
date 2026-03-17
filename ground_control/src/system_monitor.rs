@@ -1,4 +1,9 @@
-// src/monitor.rs
+// src/system_monitor.rs
+//
+// Presentation map:
+// - B4.2: periodic CPU/memory/load sampling for system load metrics.
+// - B4.3: emits timestamped SystemHealthUpdate events.
+// - S6: contributes report-ready load metrics to PerformanceTracker summaries.
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -10,7 +15,7 @@ use crate::performance_tracker::{PerformanceTracker, PerformanceEvent, EventType
 
 use sysinfo::System;
 
-/// System load monitoring functionality
+/// System load sampler feeding B4.2/B4.3 evidence into PerformanceTracker.
 pub struct SystemLoadMonitor {
     sys: System,
     cpu_cores: u32,
@@ -75,7 +80,7 @@ pub struct SystemLoadMetrics {
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
 
-/// Start the system load sampling task
+/// Start periodic system load sampling and emit timestamped health events.
 pub async fn run_system_load_sampler(
     performance_tracker: Arc<Mutex<PerformanceTracker>>,
     interval_ms: u64,

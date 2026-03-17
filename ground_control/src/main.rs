@@ -22,6 +22,14 @@ use fault_management::FaultManager;
 use performance_tracker::{PerformanceTracker, PerformanceEvent, EventType};
 use command_scheduler::{CommandScheduler, EnhancedCommandSchedulerStats, UnifiedDeadlineReport};
 
+// Presentation map (Student B + Shared requirements):
+// - B1.1/B1.2/B1.4 + S2/S3: Task 1 network receive loop and timing events.
+// - B1.3 + S2: Task 3 retransmission and packet-to-uplink latency metrics.
+// - B2.1/B2.2/B2.4 + S1/S3: Task 7 command scheduler tick, deadline checks, jitter/drift metrics.
+// - B2.3/B3.2/B3.3/B3.4 + S5: interlock-aware dispatch and rejection telemetry.
+// - B3.1/B3.5 + S4: telemetry fault intake and critical-alert handling via FaultManager.
+// - B4.1/B4.2/B4.3 + S6: performance events, system load sampling, and shutdown summary output.
+
 /// Handy: stringify any Debug-able enum for logs/metadata
 fn format_debug_enum<T: std::fmt::Debug>(value: &T) -> String { format!("{:?}", value) }
 
@@ -124,6 +132,7 @@ impl GroundControlSystem {
         let pending_command_issued_at = Arc::new(Mutex::new(std::collections::HashMap::<String, DateTime<Utc>>::new()));
 
         // --- Task 1: network receive ---
+        // Covers B1.1, B1.2, B1.4, S2, S3.
         let network_task = {
             let telemetry_tx = telemetry_tx.clone();
             let performance_tx = performance_tx.clone();
@@ -289,7 +298,8 @@ impl GroundControlSystem {
             })
         };
 
-        // --- Task 2: telemetry processing (≤3ms target) ---
+        // --- Task 2: telemetry processing (<=3ms target) ---
+        // Covers B1.1 decode/processing budget, B3.1 fault message intake path, S4.
         let telemetry_task = {
             let fault_tx_telemetry = fault_tx.clone();
             let performance_tx = performance_tx.clone();
@@ -428,6 +438,7 @@ impl GroundControlSystem {
         };
 
         // --- Task 3: missing packet rerequest ---
+        // Covers B1.3 and shared pipeline latency tracking (S2).
         let missing_packet_task = {
             let telemetry_processor = Arc::clone(&self.telemetry_processor);
             let network_manager = Arc::clone(&self.network_manager);
@@ -550,15 +561,18 @@ impl GroundControlSystem {
         };
 
         // --- Task 4: fault management ---
+        // Covers B3.2, B3.3, B3.5, S4, S5.
         let fault_task = Self::launch_fault_management_task(fault_rx, Arc::clone(&fault_manager));
 
         // --- Task 5: performance monitor ---
+        // Aggregates B4.x and shared metrics for final reporting (S6).
         let performance_task = Self::launch_performance_monitor_task(
             performance_rx,
             Arc::clone(&performance_tracker),
         );
 
         // --- Task 6: health heartbeat ---
+        // Feeds B4.2 system load and recovery metrics.
         let health_task = {
             let is_running = Arc::clone(&is_running);
             let performance_tracker = Arc::clone(&self.performance_tracker);
@@ -623,6 +637,7 @@ impl GroundControlSystem {
         };
 
         // --- Task 7: RT command scheduler (0.5ms tick) ---
+        // Covers B2.1, B2.2, B2.3, B2.4, S1, S3, S5.
         let command_scheduler_task = {
             let command_scheduler = Arc::clone(&self.command_scheduler);
             let fault_manager = Arc::clone(&self.fault_manager);
@@ -1077,11 +1092,11 @@ async fn main() -> Result<()> {
     println!("│                      GROUND CONTROL OPERATIONAL                            │");
     println!("└─────────────────────────────────────────────────────────────────────────────┘");
     info!("Ground Control Station Operational - Monitoring Satellite Systems");
-    // --- ADD THIS BLOCK ---
-    // Periodically send a test command to generate continuous Command-to-Response RTT samples
+    // Demo helper for S2 command->response latency evidence.
+    // Periodically sends an emergency test command to keep RTT samples flowing.
     let gcs_command_tester = Arc::clone(&gcs_arc);
     tokio::spawn(async move {
-        // Fire a test command every 10 seconds
+        // Fire one test command every 10 seconds.
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
         loop {
             interval.tick().await;
@@ -1090,7 +1105,6 @@ async fn main() -> Result<()> {
             }
         }
     });
-    // ----------------------
 
     gcs_arc.run().await
 }

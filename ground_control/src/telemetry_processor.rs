@@ -1,4 +1,10 @@
-// src/telemetry.rs
+// src/telemetry_processor.rs
+//
+// Presentation map:
+// - B1.1: telemetry packet processing budget (<=3ms target).
+// - B1.3: missing/delayed packet detection and re-request candidate generation.
+// - B3.1: emergency alert payload conversion into FaultEvent.
+// - S4: fault signal forwarding support for recovery tracking.
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -12,7 +18,7 @@ use shared_protocol::{
 };
 use crate::fault_management::{FaultEvent, FaultType, Severity};
 
-/// Processes and analyzes telemetry packets from the satellite
+/// Processes telemetry from satellite and extracts signals needed by command/fault pipelines.
 #[derive(Debug)]
 pub struct TelemetryProcessor {
     last_sequence_numbers: HashMap<String, u32>, // by packet-type string
@@ -202,7 +208,7 @@ impl TelemetryProcessor {
         }
     }
     
-    /// Main packet processing function - must complete within 3ms
+    /// Main packet processing function; runtime monitors this against the 3ms target (B1.1).
     pub async fn process_telemetry_packet(
         &mut self, 
         packet: CommunicationPacket, 
@@ -355,7 +361,7 @@ impl TelemetryProcessor {
         Ok(packet_result)
     }
     
-    /// Check for packet delay
+    /// Detect delayed arrivals for re-request and drift reporting (B1.2, B1.3, S3).
     fn expected_interval_ms(packet_type: PacketType) -> f64 {
         match packet_type {
             PacketType::Telemetry => 100.0,
@@ -608,7 +614,7 @@ impl TelemetryProcessor {
         missing_packet_ids
     }
 
-    /// Get missing packets ready for re-request with current wait age in ms.
+    /// Build uplink candidates for missing packets (B1.3).
     pub fn collect_missing_packet_uplink_candidates(&mut self) -> Vec<MissingPacketUplinkCandidate> {
         let now = Utc::now();
         let mut candidates = Vec::new();
@@ -626,7 +632,7 @@ impl TelemetryProcessor {
         candidates
     }
 
-    /// Get delayed packets ready for re-request with current wait age in ms.
+    /// Build uplink candidates for delayed packets (B1.3).
     pub fn collect_delayed_packet_uplink_candidates(&mut self) -> Vec<MissingPacketUplinkCandidate> {
         let now = Utc::now();
         let mut candidates = Vec::new();

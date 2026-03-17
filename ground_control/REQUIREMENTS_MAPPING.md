@@ -47,3 +47,44 @@ The following requirements are not fully satisfiable by code alone and require r
 2. S6 final report inclusion: code emits metrics/logs, but selecting and presenting all required evidence is manual.
 
 No fully missing (Status = Missing) Student B runtime requirement was found in ground_control after removing synthetic trigger hooks.
+
+## Comment Coverage Audit (Ground Control Source)
+
+Audit date: 2026-03-17
+
+Result: all Student B and Shared requirement IDs are explicitly listed in source comments.
+
+- Missing requirement IDs from comments: none.
+- Scope note for S2: the `sensor->buffer` pipeline is mainly implemented in `satellite_ocs`; Ground Control comments still reference S2 for the `packet->uplink` and `command->response` portions.
+
+### Student B Points (Comment Listing)
+
+| ID | Listed In Comments | Primary Comment Anchors |
+|---|---|---|
+| B1.1 | Yes | `src/main.rs` (Task 1/Task 2 map), `src/network_manager.rs`, `src/telemetry_processor.rs` |
+| B1.2 | Yes | `src/main.rs` (Task 1 map), `src/network_manager.rs`, `src/telemetry_processor.rs` |
+| B1.3 | Yes | `src/main.rs` (Task 3 map), `src/network_manager.rs`, `src/telemetry_processor.rs` |
+| B1.4 | Yes | `src/main.rs` (Task 1 map), `src/fault_management.rs` |
+| B2.1 | Yes | `src/main.rs` (Task 7 map), `src/command_scheduler.rs` |
+| B2.2 | Yes | `src/main.rs` (Task 7 map), `src/command_scheduler.rs`, `src/network_manager.rs` |
+| B2.3 | Yes | `src/main.rs` (Task 7 map), `src/command_scheduler.rs` |
+| B2.4 | Yes | `src/main.rs` (Task 7 map), `src/command_scheduler.rs` |
+| B3.1 | Yes | `src/main.rs` (Task 2 map), `src/telemetry_processor.rs` |
+| B3.2 | Yes | `src/main.rs` (Task 4/Task 7 map), `src/command_scheduler.rs`, `src/fault_management.rs` |
+| B3.3 | Yes | `src/main.rs` (Task 4 map), `src/fault_management.rs` |
+| B3.4 | Yes | `src/main.rs` (Task 7 map), `src/command_scheduler.rs`, `src/fault_management.rs` |
+| B3.5 | Yes | `src/main.rs` (Task 4 map), `src/fault_management.rs` |
+| B4.1 | Yes | `src/main.rs` (top map + Task 5), `src/performance_tracker.rs` |
+| B4.2 | Yes | `src/main.rs` (Task 6 map), `src/performance_tracker.rs`, `src/system_monitor.rs` |
+| B4.3 | Yes | `src/main.rs` (top map), `src/performance_tracker.rs`, `src/system_monitor.rs` |
+
+### Shared Points (Comment Listing)
+
+| ID | Listed In Comments | Primary Comment Anchors |
+|---|---|---|
+| S1 | Yes | `src/main.rs` (Task 7 map), `src/network_manager.rs`, `src/performance_tracker.rs` |
+| S2 | Yes | `src/main.rs` (Task 1/Task 3 + RTT helper), `src/network_manager.rs`, `src/performance_tracker.rs` |
+| S3 | Yes | `src/main.rs` (Task 1/Task 7 map), `src/network_manager.rs`, `src/telemetry_processor.rs`, `src/performance_tracker.rs` |
+| S4 | Yes | `src/main.rs` (Task 2/Task 4 map), `src/telemetry_processor.rs`, `src/fault_management.rs`, `src/performance_tracker.rs` |
+| S5 | Yes | `src/main.rs` (Task 4/Task 7 map), `src/command_scheduler.rs`, `src/fault_management.rs` |
+| S6 | Yes | `src/main.rs` (top map + Task 5), `src/performance_tracker.rs`, `src/system_monitor.rs` |

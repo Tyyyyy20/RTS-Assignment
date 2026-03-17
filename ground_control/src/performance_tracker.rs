@@ -1,4 +1,10 @@
-//performance.rs
+// performance_tracker.rs
+//
+// Presentation map:
+// - B4.1: uplink jitter, telemetry backlog, and scheduler drift benchmarking.
+// - B4.2: missed deadlines, system load, and fault recovery metric aggregation.
+// - B4.3: timestamped event ledger for all real-time actions.
+// - S1/S2/S3/S4/S6: shared drift/latency/jitter/fault metrics and final-report snapshots.
 
 use std::collections::{HashMap, VecDeque};
 use chrono::{DateTime, Utc, Duration};
@@ -7,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use shared_protocol::Timestamp;
 
-/// Tracks system performance metrics and timing requirements
+/// Tracks timestamped performance evidence across telemetry, uplink, scheduler, and faults.
 #[derive(Debug)]
 pub struct PerformanceTracker {
     events: VecDeque<PerformanceEvent>,
@@ -260,7 +266,7 @@ impl PerformanceTracker {
         }
     }
     
-    /// Record a performance event
+    /// Record a timestamped performance event (B4.3).
     pub fn record_performance_event(&mut self, perf_event: PerformanceEvent) {
         debug!("Recording Performance Event: {:?} - {:.3}ms", 
             perf_event.event_type, perf_event.duration_ms);
@@ -284,7 +290,7 @@ impl PerformanceTracker {
         self.prune_old_timing_data();
     }
     
-    /// Update metrics based on the recorded event
+    /// Update requirement-aligned aggregates from the incoming event stream.
     fn apply_event_metrics(&mut self, event: &PerformanceEvent) {
         match event.event_type {
             EventType::TelemetryProcessed => {

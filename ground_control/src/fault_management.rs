@@ -1,4 +1,12 @@
-//fault.rs
+// fault_management.rs
+//
+// Presentation map:
+// - B1.4: loss-of-contact state after consecutive communication failures.
+// - B3.2: safety interlock activation that blocks unsafe command classes.
+// - B3.3: fault->interlock->command-block latency measurement.
+// - B3.4: rejected operation audit trail (CSV + logs).
+// - B3.5: critical ground alert when fault response time exceeds 100ms.
+// - S4/S5: simulated fault handling and interlock lifecycle tracking.
 use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 use tracing::{info, warn, error};
@@ -193,6 +201,7 @@ impl FaultManager {
         }
     }
 
+    // Central fault intake and response SLA enforcement (B3.5).
     pub async fn handle_fault(&mut self, fault_event: FaultEvent) -> Result<FaultResponse> {
         let handler_started_at = std::time::Instant::now();
         let response_timestamp = Utc::now();
@@ -345,6 +354,7 @@ impl FaultManager {
         self.loc_active_since.is_some()
     }
 
+    // Declares/maintains a loss-of-contact episode after threshold failures (B1.4).
     pub async fn handle_loss_of_contact(&mut self) -> Result<FaultResponse> {
         // Guard: only declare LOC once per episode. Subsequent timeouts while
         // already in LOC mode are silent — the interlock is already active.
@@ -691,6 +701,7 @@ impl FaultManager {
         self.total_interlocks_activated += 1;
     }
 
+    // Evaluates interlock blocking and records latency chain for B3.3 evidence.
     pub fn is_command_blocked(
         &mut self,
         command_type: &str,
@@ -788,7 +799,7 @@ impl FaultManager {
         }
     }
 
-    /// Write a rejected operation entry to logs/ground_control_rejected_ops.csv for persistent audit trail.
+    /// Initialize rejected-operation CSV required for command rejection evidence (B3.4, S5).
     fn initialize_rejected_operations_csv() {
         use std::fs::{self, OpenOptions};
         use std::io::Write;
@@ -812,7 +823,7 @@ impl FaultManager {
         }
     }
 
-    /// Write a rejected operation entry to logs/ground_control_rejected_ops.csv for persistent audit trail.
+    /// Persist each rejected operation for report/demo traceability (B3.4, S5).
     fn append_rejected_operation_to_csv(event: &CommandBlockEvent) {
         use std::io::Write;
         use std::fs::{self, OpenOptions};

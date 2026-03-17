@@ -1,4 +1,11 @@
-// src/command.rs 
+// src/command_scheduler.rs
+//
+// Presentation map:
+// - B2.1: real-time command queue maintenance and dispatch ordering.
+// - B2.2: <=2ms urgent dispatch guard and deadline adherence logging.
+// - B2.3/B3.2: interlock-based command validation before dispatch.
+// - B2.4/B3.4: rejection reasons + deadline audit CSV persistence.
+// - S5: shared safety interlock enforcement integration.
 
 use std::collections::{VecDeque, HashMap};
 use chrono::{DateTime, Utc};
@@ -14,7 +21,7 @@ use shared_protocol::{
     Command, CommunicationPacket, Source, Priority, CommandType, TargetSystem,
 };
 
-// Constants for configuration
+// Constants used by deadline evidence paths and CSV audit output.
 const MAX_SEND_TIMES_HISTORY: usize = 1000;
 const NETWORK_DEADLINE_THRESHOLD_MS: f64 = 2.0;
 const DEADLINE_LOG_PATH: &str = "logs/ground_control_deadline_ops.csv";
@@ -226,7 +233,7 @@ impl CommandScheduler {
         }
     }
 
-    /// Map a `CommandType` to the interlock category string used in `FaultManager`.
+    /// Map a `CommandType` to the interlock category used by FaultManager (B2.3, S5).
     /// These strings must match the `blocked_command_types` used when activating safety interlocks.
     fn map_command_type_to_interlock_category(ct: CommandType) -> &'static str {
         match ct {
@@ -242,7 +249,7 @@ impl CommandScheduler {
         }
     }
 
-    /// Map a `TargetSystem` to the interlock system string used in `FaultManager`.
+    /// Map a `TargetSystem` to the interlock system category used by FaultManager.
     fn map_target_system_to_interlock_category(ts: TargetSystem) -> &'static str {
         match ts {
             TargetSystem::ThermalManagement => "thermal_management",
@@ -267,7 +274,7 @@ impl CommandScheduler {
             let urgent = (scheduled.command.priority as u8) <= 1;
             let deadline = scheduled.command.deadline;
 
-            // ── Safety interlock check ──────────────────────────────────────
+            // Safety interlock check (B2.3, B3.2, S5).
             // Emergency / Recovery commands bypass interlocks so we can always
             // send critical responses regardless of active faults.
             let bypasses_interlocks = matches!(
@@ -318,7 +325,7 @@ impl CommandScheduler {
                         }).await;
                     }
 
-                    // Discard the blocked command (do not requeue).
+                    // Discard blocked commands and keep reason metadata for B2.4/B3.4 evidence.
                     error!(
                         "Command {} discarded due to active safety interlock",
                         scheduled.command.command_id

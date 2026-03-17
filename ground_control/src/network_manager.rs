@@ -1,4 +1,11 @@
-// src/network.rs
+// src/network_manager.rs
+//
+// Presentation map:
+// - B1.1: socket reception + decode timing in receive_packet_with_reception_timing.
+// - B1.2: reception latency/drift/jitter calculations in compute_reception_timing.
+// - B1.3: retransmission command uplink in send_retransmission_request.
+// - B2.2: urgent command <=2ms network deadline guard in send_packet_with_deadline_guard.
+// - S2/S3: packet->uplink latency support and jitter/drift instrumentation.
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, AtomicU32, Ordering};
@@ -27,7 +34,7 @@ const KEY_ID: u8 = 1;
 const KEY_HEX: &str =
     "0000000000000000000000000000000000000000000000000000000000000007";
 
-/// Reception timing data for performance tracking
+/// Reception timing data used as evidence for latency, drift, and jitter requirements.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ReceptionTiming {
@@ -249,7 +256,7 @@ impl NetworkManager {
         Ok((packet, timing))
     }
 
-    /// Calculate comprehensive reception timing metrics
+    /// Calculate reception drift/jitter metrics against expected schedule (B1.2, S1, S3).
     async fn compute_reception_timing(&self, packet: &CommunicationPacket, reception_time: DateTime<Utc>) -> ReceptionTiming {
         let packet_type_s = format!("{:?}", packet.header.packet_type);
         let packet_type_key = packet_type_s.to_ascii_lowercase();
@@ -423,7 +430,7 @@ impl NetworkManager {
         Ok(())
     }
 
-    /// Send a packet with deadline enforcement for urgent commands (seal + send)
+    /// Send a packet with urgent deadline enforcement (B2.2).
     pub async fn send_packet_with_deadline_guard(
         &self,
         packet: CommunicationPacket,
@@ -519,7 +526,7 @@ impl NetworkManager {
         })
     }
 
-    /// Request retransmission (uses Command from shared_protocol)
+    /// Request retransmission for missing/delayed telemetry packets (B1.3).
     pub async fn send_retransmission_request(&self, packet_id: &str) -> Result<()> {
         info!("Requesting Packet Retransmission: {}", packet_id);
         let (sensor_id, sensor_type, reason) = self.parse_retransmission_packet_info(packet_id);
