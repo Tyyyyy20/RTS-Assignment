@@ -108,7 +108,7 @@ impl NetworkManager {
     pub async fn new_default() -> Result<Self> {
         Self::new_with_addresses(
             "127.0.0.1:7891".parse()?, // Ground Control address
-            "127.0.0.1:7890".parse()?, // Satellite address
+            "127.0.0.1:7892".parse()?, // Satellite address (matches satellite's bind_addr)
             Duration::from_millis(150), // Receive timeout
             Duration::from_millis(75),  // Send timeout
         ).await

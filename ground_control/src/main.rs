@@ -1031,6 +1031,20 @@ async fn main() -> Result<()> {
     println!("│                      GROUND CONTROL OPERATIONAL                            │");
     println!("└─────────────────────────────────────────────────────────────────────────────┘");
     info!("Ground Control Station Operational - Monitoring Satellite Systems");
+    // --- ADD THIS BLOCK ---
+    // Periodically send a test command to generate continuous Command-to-Response RTT samples
+    let gcs_command_tester = Arc::clone(&gcs_arc);
+    tokio::spawn(async move {
+        // Fire a test command every 10 seconds
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+        loop {
+            interval.tick().await;
+            if let Err(e) = gcs_command_tester.schedule_emergency_deadline_test().await {
+                tracing::error!("Failed to schedule test command: {}", e);
+            }
+        }
+    });
+    // ----------------------
 
     gcs_arc.run().await
 }
