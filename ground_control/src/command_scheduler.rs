@@ -176,7 +176,7 @@ impl CommandScheduler {
         self.send_times_ms.push_back(send_time_ms);
     }
 
-    fn append_deadline_operation_to_csv(
+    pub fn append_deadline_operation_to_csv(
         command: &Command,
         is_urgent: bool,
         send_time_ms: f64,

@@ -718,10 +718,7 @@ impl PerformanceTracker {
     /// Get comprehensive performance statistics
     pub fn snapshot_current_stats(&self) -> PerformanceStats {
         let recent_events = self.collect_recent_events(Duration::minutes(5));
-        let telemetry_violations_recent = recent_events.iter()
-            .filter(|e| matches!(e.event_type, EventType::TelemetryProcessingViolation))
-            .count() as u32;
-        
+
         let delayed_packets_recent = recent_events.iter()
             .filter(|e| matches!(e.event_type, EventType::PacketDelayed))
             .count() as u64;

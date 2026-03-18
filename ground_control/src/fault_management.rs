@@ -27,6 +27,7 @@ pub enum FaultType {
     CommunicationLoss,
     SensorFailure,
     CommandRejection,
+    CommandReceived, // Added for command event tracking
     Unknown(String),
 }
 
@@ -296,6 +297,9 @@ impl FaultManager {
             FaultType::SystemOverload => {
                 response = self.handle_system_overload(fault_event.clone(), response, &fault_id).await?;
             }
+            FaultType::CommandReceived => {
+                // No special handling for command receipt events
+            }
             _ => {
                 response = self.handle_generic_fault(fault_event.clone(), response, &fault_id).await?;
             }
@@ -324,6 +328,8 @@ impl FaultManager {
                 FaultType::SystemOverload => Some(RecoveryMode::SafeMode),
                 FaultType::NetworkError | FaultType::CommunicationLoss => Some(RecoveryMode::LinkFallback),
                 FaultType::TelemetryError | FaultType::SensorFailure | FaultType::CommandRejection | FaultType::Unknown(_) => Some(RecoveryMode::SoftReset),
+                FaultType::CommandReceived => None,
+                _ => None,
             };
 
             if let Some(active_fault) = self.active_faults.get_mut(&fault_id) {

@@ -302,8 +302,17 @@ impl TelemetryProcessor {
                 }
             }
             
-            PacketPayload::CommandData(_) => {
-                debug!("Command Data Packet Received (Uncommon For Ground Control Path)");
+            PacketPayload::CommandData(cmd) => {
+                debug!("Command Data Packet Received: id={} type={:?} desc={}", cmd.command_id, cmd.command_type, cmd.description);
+                // Record as a detected command event (extend as needed)
+                packet_result.detected_faults.push(FaultEvent {
+                    timestamp: cmd.timestamp,
+                    fault_type: FaultType::CommandReceived,
+                    severity: Severity::Low,
+                    description: format!("Command received: id={} type={:?} desc={}", cmd.command_id, cmd.command_type, cmd.description),
+                    affected_systems: vec![format!("{:?}", cmd.target_system)],
+                });
+                // Optionally, log to CSV or other audit as needed
             }
             
             PacketPayload::AcknowledgmentData(ack) => {
@@ -331,6 +340,25 @@ impl TelemetryProcessor {
         // Update statistics
         self.total_packets_processed += 1;
         self.total_processing_time_ms += processing_time;
+
+        // Log every packet as a command (urgent or non-urgent)
+        // Only log real Command packets as commands
+        if let PacketType::Command = packet.header.packet_type {
+            if let PacketPayload::CommandData(cmd) = &packet.payload {
+                use crate::command_scheduler;
+                let urgent = (cmd.priority as u8) <= 1;
+                command_scheduler::CommandScheduler::append_deadline_operation_to_csv(
+                    cmd,
+                    urgent,
+                    processing_time,
+                    true, // deadline_met (not enforced for non-urgent)
+                    true, // network_met (not enforced for non-urgent)
+                    true, // adherent (not enforced for non-urgent)
+                    0.0,  // deadline_violation_ms
+                    "ok",
+                );
+            }
+        }
         
         // Record packet in history
         self.packet_history.push(PacketRecord {
