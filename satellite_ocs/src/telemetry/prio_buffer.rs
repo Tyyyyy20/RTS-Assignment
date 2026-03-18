@@ -1,4 +1,3 @@
-use once_cell::sync::OnceCell;
 use shared_protocol::{Priority, SensorReading};
 use std::collections::VecDeque;
 use std::sync::Arc;

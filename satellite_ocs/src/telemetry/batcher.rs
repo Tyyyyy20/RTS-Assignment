@@ -1,6 +1,5 @@
 
 use crate::{config::Config, crypto::Crypto, logging};
-use chrono::Utc;
 use once_cell::sync::OnceCell;
 use shared_protocol::{
     CommunicationPacket, EmergencyData, EncryptedFrame, Priority, SensorReading, Source,

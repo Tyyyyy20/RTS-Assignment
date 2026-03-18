@@ -1,5 +1,5 @@
 use shared_protocol::{EmergencyData, Severity, SensorReading, ThermalSensor};
-use tokio::time::{self, Duration, Instant};
+use tokio::time::{Duration, Instant};
 use tracing::{info, warn};
 use chrono::Utc;
 
