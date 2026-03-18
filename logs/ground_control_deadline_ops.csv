@@ -1,0 +1,2 @@
+ts,command_id,command_type,target_system,priority,is_urgent,send_time_ms,deadline_met,network_met,adherent,deadline_violation_ms,reason
+2026-03-18T16:33:03.982255500+00:00,5ce9849f-4dd9-415d-b04f-400af7287b87,Emergency,AllSystems,0,true,0.214,true,true,true,0.000,ok

@@ -53,7 +53,6 @@ pub struct FaultResponse {
     pub fault_id: String,
     pub response_timestamp: DateTime<Utc>,
     pub response_time_ms: f64,
-    pub recommended_action: Option<String>,
     pub safety_interlocks_triggered: Vec<String>,
     pub commands_blocked: Vec<String>,
     pub auto_recovery_attempted: bool,
@@ -167,8 +166,8 @@ impl FaultManager {
         Self::initialize_rejected_operations_csv();
         // Ensure fault/recovery audit CSV exists from startup.
         Self::initialize_fault_recovery_csv();
-        // Ensure dedicated critical-ground-alert audit CSV exists from startup.
-        Self::initialize_critical_alert_csv();
+        // Ensure critical-alert audit CSV exists from startup (same columns, filtered mirror).
+        Self::initialize_csv(CRITICAL_ALERT_LOG_PATH);
 
         Self {
             active_faults: HashMap::new(),
@@ -209,36 +208,33 @@ impl FaultManager {
         let handler_started_at = std::time::Instant::now();
         let response_timestamp = Utc::now();
 
-        info!("Fault Intake Received: {:?} | {}", fault_event.fault_type, fault_event.description);
+        warn!("Fault Intake Received: {:?} | {}", fault_event.fault_type, fault_event.description);
 
         let fault_id = self.generate_fault_id(&fault_event);
-
-        let fault_already_active = self.active_faults.contains_key(&fault_id);
-
         let mut response = FaultResponse {
             fault_id: fault_id.clone(),
             response_timestamp,
             response_time_ms: 0.0,
-            recommended_action: None,
             safety_interlocks_triggered: Vec::new(),
             commands_blocked: Vec::new(),
             auto_recovery_attempted: false,
         };
 
-        if fault_already_active {
-            if let Some(active_fault) = self.active_faults.get_mut(&fault_id) {
+        let mut fault_already_active = false;
+        if let Some(active_fault) = self.active_faults.get_mut(&fault_id) {
+            if !active_fault.is_resolved {
+                // Fault is still active; treat as recurrence only.
+                fault_already_active = true;
                 active_fault.last_occurrence = fault_event.timestamp;
                 active_fault.occurrence_count += 1;
-
                 warn!("Recurring Fault Observed: {} (Count #{})", fault_id, active_fault.occurrence_count);
-
                 if active_fault.occurrence_count >= 3 {
-                    response.recommended_action = Some("Escalate To Critical - Repeated Fault Pattern".to_string());
+                    warn!("Escalate Fault - Repeated Pattern");
                 }
             }
-        } else {
+        }
+        if !fault_already_active {
             let detected_timestamp = fault_event.timestamp;
-
             if let Some(prev) = self.last_any_fault_detected_at {
                 let gap_ms = (detected_timestamp - prev)
                     .num_microseconds()
@@ -246,7 +242,6 @@ impl FaultManager {
                 Self::push_sample_bounded(&mut self.mtbf_samples_ms, gap_ms, 200);
             }
             self.last_any_fault_detected_at = Some(detected_timestamp);
-
             let active_fault = ActiveFault {
                 fault_event: fault_event.clone(),
                 fault_id: fault_id.clone(),
@@ -260,23 +255,9 @@ impl FaultManager {
                 auto_recovery_attempted: false,
                 recovery_mode: None,
             };
-
             self.active_faults.insert(fault_id.clone(), active_fault);
             self.total_faults_detected += 1;
 
-            Self::append_fault_recovery_csv_entry(
-                "detected",
-                &fault_id,
-                &fault_event.fault_type,
-                &fault_event.severity,
-                &fault_event.description,
-                None,
-                None,
-                Some(detected_timestamp),
-                None,
-                None,
-                false,
-            );
         }
 
         match fault_event.fault_type {
@@ -309,56 +290,85 @@ impl FaultManager {
             active_fault.blocked_commands = response.commands_blocked.clone();
         }
 
-        // =========================================================================
-        // CRITICAL ALERT TRIGGER (B3.5: >100ms Response Time)
-        // =========================================================================
-        if response_time > self.critical_response_time_ms {
-            self.total_response_time_critical_alerts += 1;
-            let _ = self.trigger_critical_ground_alert(&fault_event, response_time, "Initial Response Timeout").await;
+        // Determine whether this fault crossed the critical ground alert threshold.
+        // This is the single place that decides the label for both CSVs.
+        let is_critical_ground_alert = response_time > self.critical_response_time_ms;
 
-            // Prioritize immediate recovery attempt when critical response-time SLA is breached.
-            let prioritized_mode = match fault_event.fault_type {
-                FaultType::ThermalAnomaly => Some(RecoveryMode::Cooldown),
-                FaultType::PowerAnomaly => Some(RecoveryMode::PowerSave),
-                FaultType::AttitudeAnomaly => Some(RecoveryMode::AttitudeHold),
-                FaultType::SystemOverload => Some(RecoveryMode::SafeMode),
-                FaultType::NetworkError | FaultType::CommunicationLoss => Some(RecoveryMode::LinkFallback),
-                FaultType::TelemetryError | FaultType::SensorFailure | FaultType::CommandRejection | FaultType::Unknown(_) => Some(RecoveryMode::SoftReset),
-            };
+        if is_critical_ground_alert {
+            error!(
+                "Fault Response Window Exceeded {}ms: {:.3}ms",
+                self.critical_response_time_ms, response_time
+            );
+            self.total_response_time_critical_alerts += 1;
 
             if let Some(active_fault) = self.active_faults.get_mut(&fault_id) {
                 active_fault.auto_recovery_attempted = true;
-                active_fault.recovery_mode = prioritized_mode.clone();
+                active_fault.recovery_mode = match fault_event.fault_type {
+                    FaultType::ThermalAnomaly => Some(RecoveryMode::Cooldown),
+                    FaultType::PowerAnomaly => Some(RecoveryMode::PowerSave),
+                    FaultType::AttitudeAnomaly => Some(RecoveryMode::AttitudeHold),
+                    FaultType::SystemOverload => Some(RecoveryMode::SafeMode),
+                    FaultType::NetworkError | FaultType::CommunicationLoss => Some(RecoveryMode::LinkFallback),
+                    FaultType::TelemetryError
+                    | FaultType::SensorFailure
+                    | FaultType::CommandRejection
+                    | FaultType::Unknown(_) => Some(RecoveryMode::SoftReset),
+                };
             }
 
-            let prioritized_mode_label = prioritized_mode.as_ref().map(|m| format!("{:?}", m));
-            warn!(
-                "CRITICAL GROUND ALERT RESPONSE INITIATED: fault_id={} exceeds {}ms (actual {:.3}ms); prioritized_mode={}",
-                fault_id,
-                self.critical_response_time_ms,
-                response_time,
-                prioritized_mode_label.as_deref().unwrap_or("none")
-            );
+            response.auto_recovery_attempted = true;
 
+            // Always record a row in the critical alerts CSV for every critical alert, not just new faults
             Self::append_fault_recovery_csv_entry(
-                "critical_alert_response",
+                CRITICAL_ALERT_LOG_PATH,
+                "detected",
                 &fault_id,
                 &fault_event.fault_type,
                 &fault_event.severity,
                 &fault_event.description,
-                Some("responded"),
-                prioritized_mode_label.as_deref(),
+                None,
                 Some(fault_event.timestamp),
                 None,
-                Some(response_time),
                 false,
+                Some(response_time),
+                None,
             );
+        }
 
-            response.auto_recovery_attempted = true;
-            response.recommended_action = Some(format!(
-                "CRITICAL GROUND ALERT response initiated (> {:.0}ms): prioritized recovery workflow engaged",
-                self.critical_response_time_ms
-            ));
+        // New faults always get a detection row in the main CSV.
+        // If response time exceeded the threshold, mirror the same row to the
+        // critical alerts CSV — no special labels, just a filtered copy.
+        if !fault_already_active {
+            Self::append_fault_recovery_csv_entry(
+                FAULT_RECOVERY_LOG_PATH,
+                "detected",
+                &fault_id,
+                &fault_event.fault_type,
+                &fault_event.severity,
+                &fault_event.description,
+                None,
+                Some(fault_event.timestamp),
+                None,
+                false,
+                Some(response_time),
+                None,
+            );
+            if is_critical_ground_alert {
+                Self::append_fault_recovery_csv_entry(
+                    CRITICAL_ALERT_LOG_PATH,
+                    "detected",
+                    &fault_id,
+                    &fault_event.fault_type,
+                    &fault_event.severity,
+                    &fault_event.description,
+                    None,
+                    Some(fault_event.timestamp),
+                    None,
+                    false,
+                    Some(response_time),
+                    None,
+                );
+            }
         }
 
         self.update_response_time_stats(response_time);
@@ -385,7 +395,6 @@ impl FaultManager {
                 fault_id: "loss_of_contact_ongoing".to_string(),
                 response_timestamp: Utc::now(),
                 response_time_ms: 0.0,
-                recommended_action: None,
                 safety_interlocks_triggered: vec![],
                 commands_blocked: vec![],
                 auto_recovery_attempted: false,
@@ -409,8 +418,9 @@ impl FaultManager {
         self.activate_safety_interlock(
             "emergency_loss_of_contact".to_string(),
             vec![FaultType::CommunicationLoss, FaultType::NetworkError],
-            vec!["non_essential".to_string(), "experimental".to_string(), "high_power".to_string()],
-            vec!["all_non_critical".to_string()],
+            vec!["cpu_intensive_tasks".to_string(), "non_essential".to_string(), "payload_activation".to_string(),
+                 "heating".to_string(), "high_power".to_string(), "precise_maneuver".to_string(), "emergency_bypass".to_string()],
+            vec!["all_systems".to_string()],
             "Emergency: Complete Loss Of Satellite Contact".to_string(),
             Some(fault_id.clone()),
             Some(fault_event.timestamp),
@@ -420,11 +430,11 @@ impl FaultManager {
         self.loc_events += 1;
         self.auto_recovery_attempts += 1;
 
+        warn!("EMERGENCY: Loss Of Contact - Execute Backup Procedures");
         Ok(FaultResponse {
             fault_id: "loss_of_contact_emergency".to_string(),
             response_timestamp: Utc::now(),
             response_time_ms: 0.0,
-            recommended_action: Some("EMERGENCY: Loss Of Contact - Execute Backup Procedures".to_string()),
             safety_interlocks_triggered: vec!["emergency_loss_of_contact".to_string()],
             commands_blocked: vec![
                 "all_non_essential".to_string(),
@@ -446,6 +456,9 @@ impl FaultManager {
         fault_id: &str
     ) -> Result<FaultResponse> {
         if self.consecutive_network_failures >= self.loss_of_contact_threshold {
+            // Only activate the interlock once – if LOC is already declared
+            // (loc_active_since is Some) the emergency_loss_of_contact interlock
+            // was already installed by handle_loss_of_contact; don't duplicate.
             if self.loc_active_since.is_none() {
                 error!("LOSS OF CONTACT DETECTED - {} Consecutive Failures",
                     self.consecutive_network_failures);
@@ -454,8 +467,8 @@ impl FaultManager {
                 self.activate_safety_interlock(
                     interlock_id.clone(),
                     vec![FaultType::NetworkError, FaultType::CommunicationLoss],
-                    vec!["non_essential".to_string(), "experimental".to_string()],
-                    vec!["instruments".to_string(), "payload".to_string()],
+                    vec!["cpu_intensive_tasks".to_string(), "non_essential".to_string(), "payload_activation".to_string()],
+                    vec!["all_systems".to_string()],
                     "Communication Loss Condition Detected".to_string(),
                     Some(fault_id.to_string()),
                     Some(fault_event.timestamp),
@@ -472,12 +485,12 @@ impl FaultManager {
                 }
                 self.auto_recovery_attempts += 1;
             }
-            response.recommended_action = Some("LOSS OF CONTACT - Emergency Procedures Active".to_string());
+            warn!("LOSS OF CONTACT - Emergency Procedures Active");
         } else {
-            response.recommended_action = Some(format!(
+            warn!(
                 "Network Instability Detected ({}/{} Failures) - Continue Communication Monitoring",
                 self.consecutive_network_failures, self.loss_of_contact_threshold
-            ));
+            );
         }
         Ok(response)
     }
@@ -491,13 +504,14 @@ impl FaultManager {
 
         match fault_event.severity {
             Severity::Critical => {
-                response.recommended_action = Some("THERMAL EMERGENCY - Engage Cooling Systems".to_string());
+                warn!("THERMAL EMERGENCY - Engage Cooling Systems");
                 let interlock_id = "thermal_emergency".to_string();
                 self.activate_safety_interlock(
                     interlock_id.clone(),
                     vec![FaultType::ThermalAnomaly],
-                    vec!["power_intensive".to_string(), "heating".to_string()],
-                    vec!["thermal_management".to_string()],
+                    vec!["high_power".to_string(), "non_essential".to_string(),
+                         "payload_activation".to_string(), "cpu_intensive_tasks".to_string()],
+                    vec!["power_management".to_string()],
                     format!("Critical Thermal Condition Detected: {}", fault_event.description),
                     Some(fault_id.to_string()),
                     Some(fault_event.timestamp),
@@ -518,7 +532,7 @@ impl FaultManager {
             }
 
             Severity::High => {
-                response.recommended_action = Some("Thermal Warning - Increase Monitoring And Cooling".to_string());
+                warn!("Thermal Warning - Increase Monitoring And Cooling");
                 response.commands_blocked.extend(vec![
                     "heater_activation".to_string(),
                     "cpu_intensive_tasks".to_string(),
@@ -526,7 +540,7 @@ impl FaultManager {
             }
 
             _ => {
-                response.recommended_action = Some("Thermal Anomaly Detected - Track Temperature Trends".to_string());
+                warn!("Thermal Anomaly Detected - Track Temperature Trends");
             }
         }
         Ok(response)
@@ -540,13 +554,14 @@ impl FaultManager {
     ) -> Result<FaultResponse> {
         match fault_event.severity {
             Severity::Critical => {
-                response.recommended_action = Some("POWER CRITICAL - Enter Power Conservation Mode".to_string());
+                warn!("POWER CRITICAL - Enter Power Conservation Mode");
                 let interlock_id = "power_conservation".to_string();
                 self.activate_safety_interlock(
                     interlock_id.clone(),
                     vec![FaultType::PowerAnomaly],
-                    vec!["high_power".to_string(), "non_essential".to_string()],
-                    vec!["power_management".to_string()],
+                    vec!["heating".to_string(), "non_essential".to_string(),
+                         "payload_activation".to_string(), "cpu_intensive_tasks".to_string()],
+                    vec!["thermal_management".to_string()],
                     format!("Critical Power Condition Detected: {}", fault_event.description),
                     Some(fault_id.to_string()),
                     Some(fault_event.timestamp),
@@ -556,7 +571,7 @@ impl FaultManager {
                 response.commands_blocked.extend(vec![
                     "payload_activation".to_string(),
                     "transmitter_high_power".to_string(),
-                    "attitude_control_intensive".to_string(),
+                    "precise_maneuver_intensive".to_string(),
                     "heating_systems".to_string(),
                 ]);
 
@@ -568,7 +583,7 @@ impl FaultManager {
             }
 
             Severity::High => {
-                response.recommended_action = Some("Power Warning - Reduce Non-Essential Systems".to_string());
+                warn!("Power Warning - Reduce Non-Essential Systems");
                 response.commands_blocked.extend(vec![
                     "payload_high_power".to_string(),
                     "experimental_mode".to_string(),
@@ -576,7 +591,7 @@ impl FaultManager {
             }
 
             _ => {
-                response.recommended_action = Some("Power Anomaly Detected - Monitor Battery And Consumption".to_string());
+                warn!("Power Anomaly Detected - Monitor Battery And Consumption");
             }
         }
         Ok(response)
@@ -590,12 +605,13 @@ impl FaultManager {
     ) -> Result<FaultResponse> {
         match fault_event.severity {
             Severity::Critical => {
-                response.recommended_action = Some("ATTITUDE CRITICAL - Stabilization Required".to_string());
+                warn!("ATTITUDE CRITICAL - Stabilization Required");
                 let interlock_id = "attitude_stabilization".to_string();
                 self.activate_safety_interlock(
                     interlock_id.clone(),
                     vec![FaultType::AttitudeAnomaly],
-                    vec!["pointing_required".to_string(), "precise_maneuver".to_string()],
+                    vec!["payload_activation".to_string(), "non_essential".to_string(), 
+                    "cpu_intensive_tasks".to_string(), "precise_maneuver".to_string()],
                     vec!["attitude_control".to_string()],
                     format!("Critical Attitude Error Detected: {}", fault_event.description),
                     Some(fault_id.to_string()),
@@ -618,7 +634,7 @@ impl FaultManager {
             }
 
             Severity::High => {
-                response.recommended_action = Some("Attitude Warning - Verify Control System".to_string());
+                warn!("Attitude Warning - Verify Control System");
                 response.commands_blocked.extend(vec![
                     "precision_pointing".to_string(),
                     "complex_maneuvers".to_string(),
@@ -626,7 +642,7 @@ impl FaultManager {
             }
 
             _ => {
-                response.recommended_action = Some("Attitude Anomaly Detected - Monitor Stability".to_string());
+                warn!("Attitude Anomaly Detected - Monitor Stability");
             }
         }
         Ok(response)
@@ -638,7 +654,7 @@ impl FaultManager {
         mut response: FaultResponse,
         fault_id: &str
     ) -> Result<FaultResponse> {
-        response.recommended_action = Some("System Overload Detected - Reduce Computational Load".to_string());
+        warn!("System Overload Detected - Reduce Computational Load");
         response.commands_blocked.extend(vec![
             "data_processing_intensive".to_string(),
             "multiple_simultaneous_operations".to_string(),
@@ -649,8 +665,8 @@ impl FaultManager {
         self.activate_safety_interlock(
             interlock_id.clone(),
             vec![FaultType::SystemOverload],
-            vec!["cpu_intensive".to_string(), "memory_intensive".to_string()],
-            vec!["processing".to_string()],
+            vec!["cpu_intensive_tasks".to_string(), "payload_activation".to_string(), "non_essential".to_string()],
+            vec!["all_systems".to_string()],
             "System Resource Overload Detected".to_string(),
             Some(fault_id.to_string()),
             Some(Utc::now()),
@@ -671,10 +687,7 @@ impl FaultManager {
         mut response: FaultResponse,
         _fault_id: &str
     ) -> Result<FaultResponse> {
-        response.recommended_action = Some(format!(
-            "Generic Fault Handling Path For {:?}: {}",
-            fault_event.fault_type, fault_event.description
-        ));
+        warn!("Generic Fault Handling Path For {:?}: {}", fault_event.fault_type, fault_event.description);
 
         if fault_event.severity <= Severity::High {
             response.commands_blocked.extend(vec![
@@ -809,12 +822,16 @@ impl FaultManager {
                 self.max_acceptable_block_latency_ms);
         }
 
+        // Persist rejected operation to CSV log
+        Self::append_rejected_operation_to_csv(&block_event);
+
         self.command_block_events.push(block_event);
         if self.command_block_events.len() > 500 {
             self.command_block_events.remove(0);
         }
     }
 
+    /// Initialize rejected-operation CSV required for command rejection evidence (B3.4, S5).
     fn initialize_rejected_operations_csv() {
         use std::fs::{self, OpenOptions};
         use std::io::Write;
@@ -823,132 +840,137 @@ impl FaultManager {
         let output_path = "logs/ground_control_rejected_ops.csv";
 
         if !std::path::Path::new(output_path).exists() {
-            if let Ok(mut csv_file) = OpenOptions::new().create(true).append(true).open(output_path) {
-                let _ = writeln!(
-                    csv_file,
-                    "ts,command_id,command_type,target_system,blocking_interlock_id,fault_id,fault_to_interlock_ms,interlock_to_block_ms,total_latency_ms"
+            match OpenOptions::new().create(true).append(true).open(output_path) {
+                Ok(mut csv_file) => {
+                    let _ = writeln!(
+                        csv_file,
+                        "ts,command_id,command_type,target_system,blocking_interlock_id,fault_id,\
+                         fault_to_interlock_ms,interlock_to_block_ms,total_latency_ms"
+                    );
+                }
+                Err(write_error) => {
+                    warn!("Unable To Initialize ground_control_rejected_ops.csv: {}", write_error);
+                }
+            }
+        }
+    }
+
+    /// Persist each rejected operation for report/demo traceability (B3.4, S5).
+    fn append_rejected_operation_to_csv(event: &CommandBlockEvent) {
+        use std::io::Write;
+        use std::fs::{self, OpenOptions};
+
+        let _ = fs::create_dir_all("logs");
+        let output_path = "logs/ground_control_rejected_ops.csv";
+        let should_write_header = !std::path::Path::new(output_path).exists();
+
+        match OpenOptions::new().create(true).append(true).open(output_path) {
+            Ok(mut csv_file) => {
+                if should_write_header {
+                    let _ = writeln!(csv_file,
+                        "ts,command_id,command_type,target_system,blocking_interlock_id,fault_id,\
+                         fault_to_interlock_ms,interlock_to_block_ms,total_latency_ms");
+                }
+                let event_timestamp = Utc::now().to_rfc3339();
+                let _ = writeln!(csv_file,
+                    "{},{},{},{},{},{},{:.3},{:.3},{:.3}",
+                    event_timestamp,
+                    event.command_id,
+                    event.command_type,
+                    event.target_system,
+                    event.blocking_interlock_id,
+                    event.fault_id,
+                    event.fault_to_interlock_latency_ms,
+                    event.interlock_to_block_latency_ms,
+                    event.total_fault_to_block_latency_ms,
                 );
+            }
+            Err(write_error) => {
+                warn!("Unable To Append ground_control_rejected_ops.csv: {}", write_error);
             }
         }
     }
 
     fn initialize_fault_recovery_csv() {
-        use std::fs::{self, OpenOptions};
-        use std::io::Write;
-
-        let _ = fs::create_dir_all("logs");
-
-        if !std::path::Path::new(FAULT_RECOVERY_LOG_PATH).exists() {
-            if let Ok(mut csv_file) = OpenOptions::new().create(true).append(true).open(FAULT_RECOVERY_LOG_PATH) {
-                let _ = writeln!(
-                    csv_file,
-                    "ts,event,fault_id,fault_type,severity,description,outcome,recovery_mode,detected_at,resolved_at,resolution_ms,auto_recovered"
-                );
-            }
-        }
+        Self::initialize_csv(FAULT_RECOVERY_LOG_PATH);
     }
 
-    fn initialize_critical_alert_csv() {
+    fn initialize_csv(path: &str) {
         use std::fs::{self, OpenOptions};
         use std::io::Write;
 
         let _ = fs::create_dir_all("logs");
 
-        if !std::path::Path::new(CRITICAL_ALERT_LOG_PATH).exists() {
-            if let Ok(mut csv_file) = OpenOptions::new().create(true).append(true).open(CRITICAL_ALERT_LOG_PATH) {
-                let _ = writeln!(
-                    csv_file,
-                    "ts,event,fault_id,fault_type,severity,description,response_time_ms,threshold_ms,outcome,recovery_mode,detected_at,resolved_at,resolution_ms"
-                );
+        if !std::path::Path::new(path).exists() {
+            match OpenOptions::new().create(true).append(true).open(path) {
+                Ok(mut csv_file) => {
+                    let _ = writeln!(
+                        csv_file,
+                        "ts,event,fault_id,fault_type,severity,description,recovery_mode,response_time_ms,resolution_ms,detected_at,resolved_at,auto_recovered"
+                    );
+                }
+                Err(e) => {
+                    warn!("Unable To Initialize {}: {}", path, e);
+                }
             }
         }
     }
 
     #[allow(clippy::too_many_arguments)]
     fn append_fault_recovery_csv_entry(
+        path: &str,
         event: &str,
         fault_id: &str,
         fault_type: &FaultType,
         severity: &Severity,
         description: &str,
-        outcome: Option<&str>,
         recovery_mode: Option<&str>,
         detected_at: Option<DateTime<Utc>>,
         resolved_at: Option<DateTime<Utc>>,
-        resolution_ms: Option<f64>,
         auto_recovered: bool,
-    ) {
-        use std::fs::{self, OpenOptions};
-        use std::io::Write;
-
-        let _ = fs::create_dir_all("logs");
-        if let Ok(mut csv_file) = OpenOptions::new().create(true).append(true).open(FAULT_RECOVERY_LOG_PATH) {
-            let detected_at_s = detected_at.map(|v| v.to_rfc3339()).unwrap_or_default();
-            let resolved_at_s = resolved_at.map(|v| v.to_rfc3339()).unwrap_or_default();
-            let resolution_ms_s = resolution_ms.map(|v| format!("{:.3}", v)).unwrap_or_default();
-
-            let _ = writeln!(
-                csv_file,
-                "{},{},{},{:?},{:?},\"{}\",{},{},{},{},{},{}",
-                Utc::now().to_rfc3339(),
-                event,
-                fault_id,
-                fault_type,
-                severity,
-                description.replace('"', "'"),
-                outcome.unwrap_or(""),
-                recovery_mode.unwrap_or(""),
-                detected_at_s,
-                resolved_at_s,
-                resolution_ms_s,
-                auto_recovered,
-            );
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn append_critical_alert_csv_entry(
-        event: &str,
-        fault_id: &str,
-        fault_type: &FaultType,
-        severity: &Severity,
-        description: &str,
         response_time_ms: Option<f64>,
-        threshold_ms: Option<f64>,
-        outcome: Option<&str>,
-        recovery_mode: Option<&str>,
-        detected_at: Option<DateTime<Utc>>,
-        resolved_at: Option<DateTime<Utc>>,
         resolution_ms: Option<f64>,
     ) {
         use std::fs::{self, OpenOptions};
         use std::io::Write;
 
         let _ = fs::create_dir_all("logs");
-        if let Ok(mut csv_file) = OpenOptions::new().create(true).append(true).open(CRITICAL_ALERT_LOG_PATH) {
-            let response_time_s = response_time_ms.map(|v| format!("{:.3}", v)).unwrap_or_default();
-            let threshold_s = threshold_ms.map(|v| format!("{:.3}", v)).unwrap_or_default();
-            let detected_at_s = detected_at.map(|v| v.to_rfc3339()).unwrap_or_default();
-            let resolved_at_s = resolved_at.map(|v| v.to_rfc3339()).unwrap_or_default();
-            let resolution_ms_s = resolution_ms.map(|v| format!("{:.3}", v)).unwrap_or_default();
+        let should_write_header = !std::path::Path::new(path).exists();
 
-            let _ = writeln!(
-                csv_file,
-                "{},{},{},{:?},{:?},\"{}\",{},{},{},{},{},{},{}",
-                Utc::now().to_rfc3339(),
-                event,
-                fault_id,
-                fault_type,
-                severity,
-                description.replace('"', "'"),
-                response_time_s,
-                threshold_s,
-                outcome.unwrap_or(""),
-                recovery_mode.unwrap_or(""),
-                detected_at_s,
-                resolved_at_s,
-                resolution_ms_s,
-            );
+        match OpenOptions::new().create(true).append(true).open(path) {
+            Ok(mut csv_file) => {
+                if should_write_header {
+                    let _ = writeln!(
+                        csv_file,
+                        "ts,event,fault_id,fault_type,severity,description,recovery_mode,response_time_ms,resolution_ms,detected_at,resolved_at,auto_recovered"
+                    );
+                }
+
+                let detected_at_s = detected_at.map(|v| v.to_rfc3339()).unwrap_or_default();
+                let resolved_at_s = resolved_at.map(|v| v.to_rfc3339()).unwrap_or_default();
+                let response_time_s = response_time_ms.map(|v| format!("{:.3}", v)).unwrap_or_default();
+                let resolution_ms_s = resolution_ms.map(|v| format!("{:.3}", v)).unwrap_or_default();
+
+                let _ = writeln!(
+                    csv_file,
+                    "{},{},{},{:?},{:?},\"{}\",{},{},{},{},{},{}",
+                    Utc::now().to_rfc3339(),
+                    event,
+                    fault_id,
+                    fault_type,
+                    severity,
+                    description.replace('"', "'"),
+                    recovery_mode.unwrap_or(""),
+                    response_time_s,
+                    resolution_ms_s,
+                    detected_at_s,
+                    resolved_at_s,
+                    auto_recovered,
+                );
+            }
+            Err(write_error) => {
+                warn!("Unable To Append ground_control_faults_recovery.csv: {}", write_error);
+            }
         }
     }
 
@@ -963,13 +985,44 @@ impl FaultManager {
                 .unwrap_or(0) as f64 / 1000.0;
 
             let (outcome_label, recovery_mode_label, auto_recovered) = match &outcome {
-                RecoveryOutcome::AutoSuccess(mode) => (
-                    "auto_success",
-                    mode.as_ref().map(|m| format!("{:?}", m)),
-                    true,
-                ),
-                RecoveryOutcome::AutoFailedThenManual => ("auto_failed_then_manual", None, false),
-                RecoveryOutcome::Manual => ("manual", None, false),
+                RecoveryOutcome::AutoSuccess(mode) => {
+                    // If an explicit mode was supplied, use it; otherwise infer from
+                    // fault type so the CSV always has a non-empty recovery_mode.
+                    let mode_str = mode.as_ref()
+                        .map(|m| format!("{:?}", m))
+                        .or_else(|| match active_fault.fault_event.fault_type {
+                            FaultType::ThermalAnomaly => Some("Cooldown".to_string()),
+                            FaultType::PowerAnomaly => Some("PowerSave".to_string()),
+                            FaultType::AttitudeAnomaly => Some("AttitudeHold".to_string()),
+                            FaultType::SystemOverload => Some("SafeMode".to_string()),
+                            FaultType::NetworkError | FaultType::CommunicationLoss => Some("LinkFallback".to_string()),
+                            FaultType::TelemetryError | FaultType::SensorFailure
+                            | FaultType::CommandRejection | FaultType::Unknown(_) => Some("SoftReset".to_string()),
+                        });
+                    ("auto_success", mode_str, true)
+                },
+                RecoveryOutcome::AutoFailedThenManual => {
+                    let default_mode = match active_fault.fault_event.fault_type {
+                        FaultType::ThermalAnomaly => Some("Cooldown"),
+                        FaultType::PowerAnomaly => Some("PowerSave"),
+                        FaultType::AttitudeAnomaly => Some("AttitudeHold"),
+                        FaultType::SystemOverload => Some("SafeMode"),
+                        FaultType::NetworkError | FaultType::CommunicationLoss => Some("LinkFallback"),
+                        FaultType::TelemetryError | FaultType::SensorFailure | FaultType::CommandRejection | FaultType::Unknown(_) => Some("SoftReset"),
+                    };
+                    ("auto_failed_then_manual", default_mode.map(|s| s.to_string()), false)
+                },
+                RecoveryOutcome::Manual => {
+                    let default_mode = match active_fault.fault_event.fault_type {
+                        FaultType::ThermalAnomaly => Some("Cooldown"),
+                        FaultType::PowerAnomaly => Some("PowerSave"),
+                        FaultType::AttitudeAnomaly => Some("AttitudeHold"),
+                        FaultType::SystemOverload => Some("SafeMode"),
+                        FaultType::NetworkError | FaultType::CommunicationLoss => Some("LinkFallback"),
+                        FaultType::TelemetryError | FaultType::SensorFailure | FaultType::CommandRejection | FaultType::Unknown(_) => Some("SoftReset"),
+                    };
+                    ("manual", default_mode.map(|s| s.to_string()), false)
+                },
             };
 
             if let Some(dt_ms) = active_fault.resolution_time.map(|r| {
@@ -990,72 +1043,49 @@ impl FaultManager {
                 }
             }
 
-            // =========================================================================
-            // CRITICAL ALERT TRIGGER (B3.5: >100ms Resolution Time)
-            // Even if the initial response was fast, if it takes too long to actually
-            // resolve the fault, trigger a critical alert!
-            // =========================================================================
-            let was_critical_ground_alert = resolution_ms > 100.0 || active_fault
+            let was_critical_ground_alert = active_fault
                 .response_time_ms
                 .map(|v| v > self.critical_response_time_ms)
                 .unwrap_or(false);
 
+            // Write resolution row to main CSV. Mirror to critical alerts CSV
+            // if this fault originally triggered a critical ground alert.
             Self::append_fault_recovery_csv_entry(
+                FAULT_RECOVERY_LOG_PATH,
                 "resolved",
                 &active_fault.fault_id,
                 &active_fault.fault_event.fault_type,
                 &active_fault.fault_event.severity,
                 &active_fault.fault_event.description,
-                Some(outcome_label),
                 recovery_mode_label.as_deref(),
                 Some(active_fault.detected_at),
                 Some(now),
-                Some(resolution_ms),
                 auto_recovered,
+                None,
+                Some(resolution_ms),
             );
-
-            info!(
-                "Fault Resolved: {} | Outcome={} | ResolutionTime={:.3}ms",
-                active_fault.fault_id,
-                outcome_label,
-                resolution_ms
-            );
-
             if was_critical_ground_alert {
-                error!(
-                    "CRITICAL GROUND ALERT RESOLVED: {} | Outcome={} | ResolutionTime={:.3}ms (>100ms Threshold)",
-                    active_fault.fault_id,
-                    outcome_label,
-                    resolution_ms
-                );
                 Self::append_fault_recovery_csv_entry(
-                    "critical_alert_resolved",
+                    CRITICAL_ALERT_LOG_PATH,
+                    "resolved",
                     &active_fault.fault_id,
                     &active_fault.fault_event.fault_type,
                     &active_fault.fault_event.severity,
                     &active_fault.fault_event.description,
-                    Some(outcome_label),
                     recovery_mode_label.as_deref(),
                     Some(active_fault.detected_at),
                     Some(now),
-                    Some(resolution_ms),
                     auto_recovered,
-                );
-                Self::append_critical_alert_csv_entry(
-                    "critical_alert_resolved",
-                    &active_fault.fault_id,
-                    &active_fault.fault_event.fault_type,
-                    &active_fault.fault_event.severity,
-                    &active_fault.fault_event.description,
-                    active_fault.response_time_ms,
-                    Some(self.critical_response_time_ms),
-                    Some(outcome_label),
-                    recovery_mode_label.as_deref(),
-                    Some(active_fault.detected_at),
-                    Some(now),
+                    None,
                     Some(resolution_ms),
                 );
             }
+
+
+            info!(
+                "Fault Resolved: {} | Outcome={} | ResolutionTime={:.3}ms",
+                active_fault.fault_id, outcome_label, resolution_ms
+            );
 
             let snapshot = active_fault.clone();
             self.fault_history.push(snapshot);
@@ -1096,29 +1126,6 @@ impl FaultManager {
                 );
             }
         }
-    }
-
-    async fn trigger_critical_ground_alert(&self, fault_event: &FaultEvent, response_time: f64, reason: &str) -> Result<()> {
-        error!("CRITICAL GROUND ALERT [{}]: Fault Response Time Exceeded {}ms", reason, self.critical_response_time_ms);
-        error!("CRITICAL GROUND ALERT DETAIL: {:?} - {} (Response Time: {:.3}ms)",
-            fault_event.fault_type, fault_event.description, response_time);
-        
-        Self::append_critical_alert_csv_entry(
-            "critical_alert_triggered",
-            &self.generate_fault_id(fault_event),
-            &fault_event.fault_type,
-            &fault_event.severity,
-            &fault_event.description,
-            Some(response_time),
-            Some(self.critical_response_time_ms),
-            Some("unresolved"),
-            None,
-            Some(fault_event.timestamp),
-            None,
-            None,
-        );
-
-        Ok(())
     }
 
     pub fn increment_consecutive_failures(&mut self) {
@@ -1206,8 +1213,19 @@ impl FaultManager {
 
         let resolved = stale_ids.len() as u32;
         for id in stale_ids {
-            info!("Auto-Resolving Stale Fault {} (Age Timeout Triggered)", id);
-            let _ = self.resolve_fault_with_outcome(&id, RecoveryOutcome::AutoSuccess(None));
+            let recovery_mode = self.active_faults.get(&id).map(|f| {
+                match f.fault_event.fault_type {
+                    FaultType::ThermalAnomaly => RecoveryMode::Cooldown,
+                    FaultType::PowerAnomaly => RecoveryMode::PowerSave,
+                    FaultType::AttitudeAnomaly => RecoveryMode::AttitudeHold,
+                    FaultType::SystemOverload => RecoveryMode::SafeMode,
+                    FaultType::NetworkError | FaultType::CommunicationLoss => RecoveryMode::LinkFallback,
+                    FaultType::TelemetryError | FaultType::SensorFailure
+                    | FaultType::CommandRejection | FaultType::Unknown(_) => RecoveryMode::SoftReset,
+                }
+            });
+            info!("Auto-Resolving Stale Fault {} (Age Timeout Triggered, Mode: {:?})", id, recovery_mode);
+            let _ = self.resolve_fault_with_outcome(&id, RecoveryOutcome::AutoSuccess(recovery_mode));
         }
         resolved
     }
@@ -1345,7 +1363,6 @@ impl std::hash::Hash for FaultType {
         }
     }
 }
-
 // // fault_management.rs
 // //
 // // Presentation map:
@@ -1515,8 +1532,8 @@ impl std::hash::Hash for FaultType {
 //         Self::initialize_rejected_operations_csv();
 //         // Ensure fault/recovery audit CSV exists from startup.
 //         Self::initialize_fault_recovery_csv();
-//         // Ensure dedicated critical-ground-alert audit CSV exists from startup.
-//         Self::initialize_critical_alert_csv();
+//         // Ensure critical-alert audit CSV exists from startup (same columns, filtered mirror).
+//         Self::initialize_csv(CRITICAL_ALERT_LOG_PATH);
 
 //         Self {
 //             active_faults: HashMap::new(),
@@ -1560,9 +1577,6 @@ impl std::hash::Hash for FaultType {
 //         info!("Fault Intake Received: {:?} | {}", fault_event.fault_type, fault_event.description);
 
 //         let fault_id = self.generate_fault_id(&fault_event);
-
-//         let fault_already_active = self.active_faults.contains_key(&fault_id);
-
 //         let mut response = FaultResponse {
 //             fault_id: fault_id.clone(),
 //             response_timestamp,
@@ -1573,20 +1587,21 @@ impl std::hash::Hash for FaultType {
 //             auto_recovery_attempted: false,
 //         };
 
-//         if fault_already_active {
-//             if let Some(active_fault) = self.active_faults.get_mut(&fault_id) {
+//         let mut fault_already_active = false;
+//         if let Some(active_fault) = self.active_faults.get_mut(&fault_id) {
+//             if !active_fault.is_resolved {
+//                 // Fault is still active; treat as recurrence only.
+//                 fault_already_active = true;
 //                 active_fault.last_occurrence = fault_event.timestamp;
 //                 active_fault.occurrence_count += 1;
-
 //                 warn!("Recurring Fault Observed: {} (Count #{})", fault_id, active_fault.occurrence_count);
-
 //                 if active_fault.occurrence_count >= 3 {
 //                     response.recommended_action = Some("Escalate To Critical - Repeated Fault Pattern".to_string());
 //                 }
 //             }
-//         } else {
+//         }
+//         if !fault_already_active {
 //             let detected_timestamp = fault_event.timestamp;
-
 //             if let Some(prev) = self.last_any_fault_detected_at {
 //                 let gap_ms = (detected_timestamp - prev)
 //                     .num_microseconds()
@@ -1594,7 +1609,6 @@ impl std::hash::Hash for FaultType {
 //                 Self::push_sample_bounded(&mut self.mtbf_samples_ms, gap_ms, 200);
 //             }
 //             self.last_any_fault_detected_at = Some(detected_timestamp);
-
 //             let active_fault = ActiveFault {
 //                 fault_event: fault_event.clone(),
 //                 fault_id: fault_id.clone(),
@@ -1608,23 +1622,11 @@ impl std::hash::Hash for FaultType {
 //                 auto_recovery_attempted: false,
 //                 recovery_mode: None,
 //             };
-
 //             self.active_faults.insert(fault_id.clone(), active_fault);
 //             self.total_faults_detected += 1;
-
-//             Self::append_fault_recovery_csv_entry(
-//                 "detected",
-//                 &fault_id,
-//                 &fault_event.fault_type,
-//                 &fault_event.severity,
-//                 &fault_event.description,
-//                 None,
-//                 None,
-//                 Some(detected_timestamp),
-//                 None,
-//                 None,
-//                 false,
-//             );
+//             // CSV write is intentionally deferred — the label ("detected" vs
+//             // "critical_alert_detected") depends on response_time, which is
+//             // only known after all fault handlers have run (see below).
 //         }
 
 //         match fault_event.fault_type {
@@ -1657,97 +1659,89 @@ impl std::hash::Hash for FaultType {
 //             active_fault.blocked_commands = response.commands_blocked.clone();
 //         }
 
-//         if response_time > self.critical_response_time_ms {
-//             error!("Fault Response Window Exceeded {}ms: {:.3}ms",
-//                 self.critical_response_time_ms, response_time);
+//         // Determine whether this fault crossed the critical ground alert threshold.
+//         // This is the single place that decides the label for both CSVs.
+//         let is_critical_ground_alert = response_time > self.critical_response_time_ms;
+
+//         if is_critical_ground_alert {
+//             error!(
+//                 "Fault Response Window Exceeded {}ms: {:.3}ms",
+//                 self.critical_response_time_ms, response_time
+//             );
 //             self.total_response_time_critical_alerts += 1;
-//             self.trigger_critical_ground_alert(&fault_event, response_time).await?;
-
-//             Self::append_fault_recovery_csv_entry(
-//                 "critical_alert",
-//                 &fault_id,
-//                 &fault_event.fault_type,
-//                 &fault_event.severity,
-//                 &fault_event.description,
-//                 Some("response_time_exceeded"),
-//                 None,
-//                 Some(fault_event.timestamp),
-//                 None,
-//                 Some(response_time),
-//                 false,
-//             );
-//             Self::append_critical_alert_csv_entry(
-//                 "critical_alert",
-//                 &fault_id,
-//                 &fault_event.fault_type,
-//                 &fault_event.severity,
-//                 &fault_event.description,
-//                 Some(response_time),
-//                 Some(self.critical_response_time_ms),
-//                 Some("response_time_exceeded"),
-//                 None,
-//                 Some(fault_event.timestamp),
-//                 None,
-//                 None,
-//             );
-
-//             // Prioritize immediate recovery attempt when critical response-time SLA is breached.
-//             let prioritized_mode = match fault_event.fault_type {
-//                 FaultType::ThermalAnomaly => Some(RecoveryMode::Cooldown),
-//                 FaultType::PowerAnomaly => Some(RecoveryMode::PowerSave),
-//                 FaultType::AttitudeAnomaly => Some(RecoveryMode::AttitudeHold),
-//                 FaultType::SystemOverload => Some(RecoveryMode::SafeMode),
-//                 FaultType::NetworkError | FaultType::CommunicationLoss => Some(RecoveryMode::LinkFallback),
-//                 FaultType::TelemetryError | FaultType::SensorFailure | FaultType::CommandRejection | FaultType::Unknown(_) => Some(RecoveryMode::SoftReset),
-//             };
 
 //             if let Some(active_fault) = self.active_faults.get_mut(&fault_id) {
 //                 active_fault.auto_recovery_attempted = true;
-//                 active_fault.recovery_mode = prioritized_mode.clone();
+//                 active_fault.recovery_mode = match fault_event.fault_type {
+//                     FaultType::ThermalAnomaly => Some(RecoveryMode::Cooldown),
+//                     FaultType::PowerAnomaly => Some(RecoveryMode::PowerSave),
+//                     FaultType::AttitudeAnomaly => Some(RecoveryMode::AttitudeHold),
+//                     FaultType::SystemOverload => Some(RecoveryMode::SafeMode),
+//                     FaultType::NetworkError | FaultType::CommunicationLoss => Some(RecoveryMode::LinkFallback),
+//                     FaultType::TelemetryError
+//                     | FaultType::SensorFailure
+//                     | FaultType::CommandRejection
+//                     | FaultType::Unknown(_) => Some(RecoveryMode::SoftReset),
+//                 };
 //             }
-
-//             let prioritized_mode_label = prioritized_mode.as_ref().map(|m| format!("{:?}", m));
-//             warn!(
-//                 "CRITICAL GROUND ALERT RESPONSE INITIATED: fault_id={} exceeds {}ms (actual {:.3}ms); prioritized_mode={}",
-//                 fault_id,
-//                 self.critical_response_time_ms,
-//                 response_time,
-//                 prioritized_mode_label.as_deref().unwrap_or("none")
-//             );
-
-//             Self::append_fault_recovery_csv_entry(
-//                 "critical_alert_response",
-//                 &fault_id,
-//                 &fault_event.fault_type,
-//                 &fault_event.severity,
-//                 &fault_event.description,
-//                 Some("responded"),
-//                 prioritized_mode_label.as_deref(),
-//                 Some(fault_event.timestamp),
-//                 None,
-//                 Some(response_time),
-//                 false,
-//             );
-//             Self::append_critical_alert_csv_entry(
-//                 "critical_alert_response",
-//                 &fault_id,
-//                 &fault_event.fault_type,
-//                 &fault_event.severity,
-//                 &fault_event.description,
-//                 Some(response_time),
-//                 Some(self.critical_response_time_ms),
-//                 Some("responded"),
-//                 prioritized_mode_label.as_deref(),
-//                 Some(fault_event.timestamp),
-//                 None,
-//                 None,
-//             );
 
 //             response.auto_recovery_attempted = true;
 //             response.recommended_action = Some(format!(
-//                 "CRITICAL GROUND ALERT response initiated (> {:.0}ms): prioritized recovery workflow engaged",
+//                 "CRITICAL GROUND ALERT (> {:.0}ms): prioritized recovery workflow engaged",
 //                 self.critical_response_time_ms
 //             ));
+
+//             // Always record a row in the critical alerts CSV for every critical alert, not just new faults
+        //     Self::append_fault_recovery_csv_entry(
+        //         CRITICAL_ALERT_LOG_PATH,
+        //         "detected",
+        //         &fault_id,
+        //         &fault_event.fault_type,
+        //         &fault_event.severity,
+        //         &fault_event.description,
+        //         None,
+        //         Some(fault_event.timestamp),
+        //         None,
+        //         false,
+        //         Some(response_time),
+        //         None,
+        //     );
+        // }
+
+//         // New faults always get a detection row in the main CSV.
+//         // If response time exceeded the threshold, mirror the same row to the
+//         // critical alerts CSV — no special labels, just a filtered copy.
+//         if !fault_already_active {
+//             Self::append_fault_recovery_csv_entry(
+//                 FAULT_RECOVERY_LOG_PATH,
+//                 "detected",
+//                 &fault_id,
+//                 &fault_event.fault_type,
+//                 &fault_event.severity,
+//                 &fault_event.description,
+//                 None,
+//                 Some(fault_event.timestamp),
+//                 None,
+//                 false,
+//                 Some(response_time),
+//                 None,
+//             );
+//             if is_critical_ground_alert {
+//                 Self::append_fault_recovery_csv_entry(
+//                     CRITICAL_ALERT_LOG_PATH,
+//                     "detected",
+//                     &fault_id,
+//                     &fault_event.fault_type,
+//                     &fault_event.severity,
+//                     &fault_event.description,
+//                     None,
+//                     Some(fault_event.timestamp),
+//                     None,
+//                     false,
+//                     Some(response_time),
+//                     None,
+//                 );
+//             }
 //         }
 
 //         self.update_response_time_stats(response_time);
@@ -1948,7 +1942,7 @@ impl std::hash::Hash for FaultType {
 //                 response.commands_blocked.extend(vec![
 //                     "payload_activation".to_string(),
 //                     "transmitter_high_power".to_string(),
-//                     "attitude_control_intensive".to_string(),
+//                     "precise_maneuver_intensive".to_string(),
 //                     "heating_systems".to_string(),
 //                 ]);
 
@@ -1988,7 +1982,7 @@ impl std::hash::Hash for FaultType {
 //                     interlock_id.clone(),
 //                     vec![FaultType::AttitudeAnomaly],
 //                     vec!["pointing_required".to_string(), "precise_maneuver".to_string()],
-//                     vec!["attitude_control".to_string()],
+//                     vec!["precise_maneuver".to_string()],
 //                     format!("Critical Attitude Error Detected: {}", fault_event.description),
 //                     Some(fault_id.to_string()),
 //                     Some(fault_event.timestamp),
@@ -2271,42 +2265,25 @@ impl std::hash::Hash for FaultType {
 //     }
 
 //     fn initialize_fault_recovery_csv() {
-//         use std::fs::{self, OpenOptions};
-//         use std::io::Write;
-
-//         let _ = fs::create_dir_all("logs");
-
-//         if !std::path::Path::new(FAULT_RECOVERY_LOG_PATH).exists() {
-//             match OpenOptions::new().create(true).append(true).open(FAULT_RECOVERY_LOG_PATH) {
-//                 Ok(mut csv_file) => {
-//                     let _ = writeln!(
-//                         csv_file,
-//                         "ts,event,fault_id,fault_type,severity,description,outcome,recovery_mode,detected_at,resolved_at,resolution_ms,auto_recovered"
-//                     );
-//                 }
-//                 Err(write_error) => {
-//                     warn!("Unable To Initialize ground_control_faults_recovery.csv: {}", write_error);
-//                 }
-//             }
-//         }
+//         Self::initialize_csv(FAULT_RECOVERY_LOG_PATH);
 //     }
 
-//     fn initialize_critical_alert_csv() {
+//     fn initialize_csv(path: &str) {
 //         use std::fs::{self, OpenOptions};
 //         use std::io::Write;
 
 //         let _ = fs::create_dir_all("logs");
 
-//         if !std::path::Path::new(CRITICAL_ALERT_LOG_PATH).exists() {
-//             match OpenOptions::new().create(true).append(true).open(CRITICAL_ALERT_LOG_PATH) {
+//         if !std::path::Path::new(path).exists() {
+//             match OpenOptions::new().create(true).append(true).open(path) {
 //                 Ok(mut csv_file) => {
 //                     let _ = writeln!(
 //                         csv_file,
-//                         "ts,event,fault_id,fault_type,severity,description,response_time_ms,threshold_ms,outcome,recovery_mode,detected_at,resolved_at,resolution_ms"
+//                         "ts,event,fault_id,fault_type,severity,description,recovery_mode,response_time_ms,resolution_ms,detected_at,resolved_at,auto_recovered"
 //                     );
 //                 }
-//                 Err(write_error) => {
-//                     warn!("Unable To Initialize ground_control_critical_alerts.csv: {}", write_error);
+//                 Err(e) => {
+//                     warn!("Unable To Initialize {}: {}", path, e);
 //                 }
 //             }
 //         }
@@ -2314,35 +2291,37 @@ impl std::hash::Hash for FaultType {
 
 //     #[allow(clippy::too_many_arguments)]
 //     fn append_fault_recovery_csv_entry(
+//         path: &str,
 //         event: &str,
 //         fault_id: &str,
 //         fault_type: &FaultType,
 //         severity: &Severity,
 //         description: &str,
-//         outcome: Option<&str>,
 //         recovery_mode: Option<&str>,
 //         detected_at: Option<DateTime<Utc>>,
 //         resolved_at: Option<DateTime<Utc>>,
-//         resolution_ms: Option<f64>,
 //         auto_recovered: bool,
+//         response_time_ms: Option<f64>,
+//         resolution_ms: Option<f64>,
 //     ) {
 //         use std::fs::{self, OpenOptions};
 //         use std::io::Write;
 
 //         let _ = fs::create_dir_all("logs");
-//         let should_write_header = !std::path::Path::new(FAULT_RECOVERY_LOG_PATH).exists();
+//         let should_write_header = !std::path::Path::new(path).exists();
 
-//         match OpenOptions::new().create(true).append(true).open(FAULT_RECOVERY_LOG_PATH) {
+//         match OpenOptions::new().create(true).append(true).open(path) {
 //             Ok(mut csv_file) => {
 //                 if should_write_header {
 //                     let _ = writeln!(
 //                         csv_file,
-//                         "ts,event,fault_id,fault_type,severity,description,outcome,recovery_mode,detected_at,resolved_at,resolution_ms,auto_recovered"
+//                         "ts,event,fault_id,fault_type,severity,description,recovery_mode,response_time_ms,resolution_ms,detected_at,resolved_at,auto_recovered"
 //                     );
 //                 }
 
 //                 let detected_at_s = detected_at.map(|v| v.to_rfc3339()).unwrap_or_default();
 //                 let resolved_at_s = resolved_at.map(|v| v.to_rfc3339()).unwrap_or_default();
+//                 let response_time_s = response_time_ms.map(|v| format!("{:.3}", v)).unwrap_or_default();
 //                 let resolution_ms_s = resolution_ms.map(|v| format!("{:.3}", v)).unwrap_or_default();
 
 //                 let _ = writeln!(
@@ -2354,76 +2333,16 @@ impl std::hash::Hash for FaultType {
 //                     fault_type,
 //                     severity,
 //                     description.replace('"', "'"),
-//                     outcome.unwrap_or(""),
 //                     recovery_mode.unwrap_or(""),
+//                     response_time_s,
+//                     resolution_ms_s,
 //                     detected_at_s,
 //                     resolved_at_s,
-//                     resolution_ms_s,
 //                     auto_recovered,
 //                 );
 //             }
 //             Err(write_error) => {
 //                 warn!("Unable To Append ground_control_faults_recovery.csv: {}", write_error);
-//             }
-//         }
-//     }
-
-//     #[allow(clippy::too_many_arguments)]
-//     fn append_critical_alert_csv_entry(
-//         event: &str,
-//         fault_id: &str,
-//         fault_type: &FaultType,
-//         severity: &Severity,
-//         description: &str,
-//         response_time_ms: Option<f64>,
-//         threshold_ms: Option<f64>,
-//         outcome: Option<&str>,
-//         recovery_mode: Option<&str>,
-//         detected_at: Option<DateTime<Utc>>,
-//         resolved_at: Option<DateTime<Utc>>,
-//         resolution_ms: Option<f64>,
-//     ) {
-//         use std::fs::{self, OpenOptions};
-//         use std::io::Write;
-
-//         let _ = fs::create_dir_all("logs");
-//         let should_write_header = !std::path::Path::new(CRITICAL_ALERT_LOG_PATH).exists();
-
-//         match OpenOptions::new().create(true).append(true).open(CRITICAL_ALERT_LOG_PATH) {
-//             Ok(mut csv_file) => {
-//                 if should_write_header {
-//                     let _ = writeln!(
-//                         csv_file,
-//                         "ts,event,fault_id,fault_type,severity,description,response_time_ms,threshold_ms,outcome,recovery_mode,detected_at,resolved_at,resolution_ms"
-//                     );
-//                 }
-
-//                 let response_time_s = response_time_ms.map(|v| format!("{:.3}", v)).unwrap_or_default();
-//                 let threshold_s = threshold_ms.map(|v| format!("{:.3}", v)).unwrap_or_default();
-//                 let detected_at_s = detected_at.map(|v| v.to_rfc3339()).unwrap_or_default();
-//                 let resolved_at_s = resolved_at.map(|v| v.to_rfc3339()).unwrap_or_default();
-//                 let resolution_ms_s = resolution_ms.map(|v| format!("{:.3}", v)).unwrap_or_default();
-
-//                 let _ = writeln!(
-//                     csv_file,
-//                     "{},{},{},{:?},{:?},\"{}\",{},{},{},{},{},{},{}",
-//                     Utc::now().to_rfc3339(),
-//                     event,
-//                     fault_id,
-//                     fault_type,
-//                     severity,
-//                     description.replace('"', "'"),
-//                     response_time_s,
-//                     threshold_s,
-//                     outcome.unwrap_or(""),
-//                     recovery_mode.unwrap_or(""),
-//                     detected_at_s,
-//                     resolved_at_s,
-//                     resolution_ms_s,
-//                 );
-//             }
-//             Err(write_error) => {
-//                 warn!("Unable To Append ground_control_critical_alerts.csv: {}", write_error);
 //             }
 //         }
 //     }
@@ -2439,13 +2358,44 @@ impl std::hash::Hash for FaultType {
 //                 .unwrap_or(0) as f64 / 1000.0;
 
 //             let (outcome_label, recovery_mode_label, auto_recovered) = match &outcome {
-//                 RecoveryOutcome::AutoSuccess(mode) => (
-//                     "auto_success",
-//                     mode.as_ref().map(|m| format!("{:?}", m)),
-//                     true,
-//                 ),
-//                 RecoveryOutcome::AutoFailedThenManual => ("auto_failed_then_manual", None, false),
-//                 RecoveryOutcome::Manual => ("manual", None, false),
+//                 RecoveryOutcome::AutoSuccess(mode) => {
+//                     // If an explicit mode was supplied, use it; otherwise infer from
+//                     // fault type so the CSV always has a non-empty recovery_mode.
+//                     let mode_str = mode.as_ref()
+//                         .map(|m| format!("{:?}", m))
+//                         .or_else(|| match active_fault.fault_event.fault_type {
+//                             FaultType::ThermalAnomaly => Some("Cooldown".to_string()),
+//                             FaultType::PowerAnomaly => Some("PowerSave".to_string()),
+//                             FaultType::AttitudeAnomaly => Some("AttitudeHold".to_string()),
+//                             FaultType::SystemOverload => Some("SafeMode".to_string()),
+//                             FaultType::NetworkError | FaultType::CommunicationLoss => Some("LinkFallback".to_string()),
+//                             FaultType::TelemetryError | FaultType::SensorFailure
+//                             | FaultType::CommandRejection | FaultType::Unknown(_) => Some("SoftReset".to_string()),
+//                         });
+//                     ("auto_success", mode_str, true)
+//                 },
+//                 RecoveryOutcome::AutoFailedThenManual => {
+//                     let default_mode = match active_fault.fault_event.fault_type {
+//                         FaultType::ThermalAnomaly => Some("Cooldown"),
+//                         FaultType::PowerAnomaly => Some("PowerSave"),
+//                         FaultType::AttitudeAnomaly => Some("AttitudeHold"),
+//                         FaultType::SystemOverload => Some("SafeMode"),
+//                         FaultType::NetworkError | FaultType::CommunicationLoss => Some("LinkFallback"),
+//                         FaultType::TelemetryError | FaultType::SensorFailure | FaultType::CommandRejection | FaultType::Unknown(_) => Some("SoftReset"),
+//                     };
+//                     ("auto_failed_then_manual", default_mode.map(|s| s.to_string()), false)
+//                 },
+//                 RecoveryOutcome::Manual => {
+//                     let default_mode = match active_fault.fault_event.fault_type {
+//                         FaultType::ThermalAnomaly => Some("Cooldown"),
+//                         FaultType::PowerAnomaly => Some("PowerSave"),
+//                         FaultType::AttitudeAnomaly => Some("AttitudeHold"),
+//                         FaultType::SystemOverload => Some("SafeMode"),
+//                         FaultType::NetworkError | FaultType::CommunicationLoss => Some("LinkFallback"),
+//                         FaultType::TelemetryError | FaultType::SensorFailure | FaultType::CommandRejection | FaultType::Unknown(_) => Some("SoftReset"),
+//                     };
+//                     ("manual", default_mode.map(|s| s.to_string()), false)
+//                 },
 //             };
 
 //             if let Some(dt_ms) = active_fault.resolution_time.map(|r| {
@@ -2471,62 +2421,44 @@ impl std::hash::Hash for FaultType {
 //                 .map(|v| v > self.critical_response_time_ms)
 //                 .unwrap_or(false);
 
+//             // Write resolution row to main CSV. Mirror to critical alerts CSV
+//             // if this fault originally triggered a critical ground alert.
 //             Self::append_fault_recovery_csv_entry(
+//                 FAULT_RECOVERY_LOG_PATH,
 //                 "resolved",
 //                 &active_fault.fault_id,
 //                 &active_fault.fault_event.fault_type,
 //                 &active_fault.fault_event.severity,
 //                 &active_fault.fault_event.description,
-//                 Some(outcome_label),
 //                 recovery_mode_label.as_deref(),
 //                 Some(active_fault.detected_at),
 //                 Some(now),
-//                 Some(resolution_ms),
 //                 auto_recovered,
+//                 None,
+//                 Some(resolution_ms),
 //             );
-
-//             info!(
-//                 "Fault Resolved: {} | Outcome={} | ResolutionTime={:.3}ms",
-//                 active_fault.fault_id,
-//                 outcome_label,
-//                 resolution_ms
-//             );
-
 //             if was_critical_ground_alert {
-//                 info!(
-//                     "CRITICAL GROUND ALERT RESOLVED: {} | Outcome={} | ResolutionTime={:.3}ms",
-//                     active_fault.fault_id,
-//                     outcome_label,
-//                     resolution_ms
-//                 );
 //                 Self::append_fault_recovery_csv_entry(
-//                     "critical_alert_resolved",
+//                     CRITICAL_ALERT_LOG_PATH,
+//                     "resolved",
 //                     &active_fault.fault_id,
 //                     &active_fault.fault_event.fault_type,
 //                     &active_fault.fault_event.severity,
 //                     &active_fault.fault_event.description,
-//                     Some(outcome_label),
 //                     recovery_mode_label.as_deref(),
 //                     Some(active_fault.detected_at),
 //                     Some(now),
-//                     Some(resolution_ms),
 //                     auto_recovered,
-//                 );
-//                 Self::append_critical_alert_csv_entry(
-//                     "critical_alert_resolved",
-//                     &active_fault.fault_id,
-//                     &active_fault.fault_event.fault_type,
-//                     &active_fault.fault_event.severity,
-//                     &active_fault.fault_event.description,
-//                     active_fault.response_time_ms,
-//                     Some(self.critical_response_time_ms),
-//                     Some(outcome_label),
-//                     recovery_mode_label.as_deref(),
-//                     Some(active_fault.detected_at),
-//                     Some(now),
+//                     None,
 //                     Some(resolution_ms),
 //                 );
 //             }
+
+
+//             info!(
+//                 "Fault Resolved: {} | Outcome={} | ResolutionTime={:.3}ms",
+//                 active_fault.fault_id, outcome_label, resolution_ms
+//             );
 
 //             let snapshot = active_fault.clone();
 //             self.fault_history.push(snapshot);
@@ -2567,13 +2499,6 @@ impl std::hash::Hash for FaultType {
 //                 );
 //             }
 //         }
-//     }
-
-//     async fn trigger_critical_ground_alert(&self, fault_event: &FaultEvent, response_time: f64) -> Result<()> {
-//         error!("CRITICAL GROUND ALERT: Fault Response Time Exceeded {}ms", self.critical_response_time_ms);
-//         error!("CRITICAL GROUND ALERT DETAIL: {:?} - {} (Response Time: {:.3}ms)",
-//             fault_event.fault_type, fault_event.description, response_time);
-//         Ok(())
 //     }
 
 //     pub fn increment_consecutive_failures(&mut self) {
@@ -2661,8 +2586,19 @@ impl std::hash::Hash for FaultType {
 
 //         let resolved = stale_ids.len() as u32;
 //         for id in stale_ids {
-//             info!("Auto-Resolving Stale Fault {} (Age Timeout Triggered)", id);
-//             let _ = self.resolve_fault_with_outcome(&id, RecoveryOutcome::AutoSuccess(None));
+//             let recovery_mode = self.active_faults.get(&id).map(|f| {
+//                 match f.fault_event.fault_type {
+//                     FaultType::ThermalAnomaly => RecoveryMode::Cooldown,
+//                     FaultType::PowerAnomaly => RecoveryMode::PowerSave,
+//                     FaultType::AttitudeAnomaly => RecoveryMode::AttitudeHold,
+//                     FaultType::SystemOverload => RecoveryMode::SafeMode,
+//                     FaultType::NetworkError | FaultType::CommunicationLoss => RecoveryMode::LinkFallback,
+//                     FaultType::TelemetryError | FaultType::SensorFailure
+//                     | FaultType::CommandRejection | FaultType::Unknown(_) => RecoveryMode::SoftReset,
+//                 }
+//             });
+//             info!("Auto-Resolving Stale Fault {} (Age Timeout Triggered, Mode: {:?})", id, recovery_mode);
+//             let _ = self.resolve_fault_with_outcome(&id, RecoveryOutcome::AutoSuccess(recovery_mode));
 //         }
 //         resolved
 //     }

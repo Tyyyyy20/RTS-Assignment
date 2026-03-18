@@ -340,9 +340,15 @@ impl GroundControlSystem {
                                 };
 
                                 if let Some(issued_at) = issued_at {
-                                    let rtt_ms = (ack.observed_at - issued_at)
+
+                                    let mut rtt_ms = (ack.observed_at - issued_at)
                                         .num_microseconds()
                                         .unwrap_or(0) as f64 / 1000.0;
+                                    // Clamp negative RTTs to zero
+                                    if rtt_ms < 0.0 {
+                                        warn!("Negative command-to-response RTT detected: {} ms (issued_at: {}, observed_at: {})", rtt_ms, issued_at, ack.observed_at);
+                                        rtt_ms = 0.0;
+                                    }
 
                                     info!(
                                         "COMMAND-TO-RESPONSE: {} | Issued={} Response={} RTT={:.3}ms Status={}",
@@ -1096,7 +1102,7 @@ async fn main() -> Result<()> {
         tokio::spawn(async move {
             tokio::signal::ctrl_c().await.expect("Ctrl+C");
             println!("┌─────────────────────────────────────────────────────────────────────────────┐");
-            println!("│                        GROUND CONTROL SHUTTING DOWN                        │");
+            println!("│                        GROUND CONTROL SHUTTING DOWN                         │");
             println!("└─────────────────────────────────────────────────────────────────────────────┘");
             info!("Shutdown Signal Received - Ground Control Entering Shutdown");
             gcs_for_shutdown.shutdown().await;
@@ -1105,7 +1111,7 @@ async fn main() -> Result<()> {
     }
 
     println!("┌─────────────────────────────────────────────────────────────────────────────┐");
-    println!("│                      GROUND CONTROL OPERATIONAL                            │");
+    println!("│                      GROUND CONTROL OPERATIONAL                             │");
     println!("└─────────────────────────────────────────────────────────────────────────────┘");
     info!("Ground Control Station Operational - Monitoring Satellite Systems");
     // Demo helper for S2 command->response latency evidence.

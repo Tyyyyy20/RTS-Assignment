@@ -718,10 +718,6 @@ impl PerformanceTracker {
     /// Get comprehensive performance statistics
     pub fn snapshot_current_stats(&self) -> PerformanceStats {
         let recent_events = self.collect_recent_events(Duration::minutes(5));
-        let telemetry_violations_recent = recent_events.iter()
-            .filter(|e| matches!(e.event_type, EventType::TelemetryProcessingViolation))
-            .count() as u32;
-        
         let delayed_packets_recent = recent_events.iter()
             .filter(|e| matches!(e.event_type, EventType::PacketDelayed))
             .count() as u64;
@@ -1302,94 +1298,3 @@ mod task4_perftracker_tests {
         );
     }
 }
-
-/* 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use chrono::Utc;
-
-    fn now_ts() -> Timestamp { Utc::now() }
-
-    #[test]
-    fn network_deadline_violation_is_counted() {
-        let mut perf = PerformanceTracker::new();
-
-        // Simulate an urgent command whose network send exceeded 2ms
-        let mut md = std::collections::HashMap::new();
-        md.insert("command_id".into(), "C-1".into());
-        md.insert("priority".into(), "0".into());
-        md.insert("send_time_ms".into(), "2.7".into());
-        perf.record_performance_event(PerformanceEvent {
-            timestamp: now_ts(),
-            event_type: EventType::NetworkDeadlineViolation,
-            duration_ms: 2.7,
-            metadata: md,
-        });
-
-        let stats = perf.snapshot_current_stats();
-        assert_eq!(stats.network_deadline_violations_2ms, 1, "should bump network ≤2ms violations");
-        assert_eq!(stats.total_performance_violations, 1, "should bump global violations too");
-    }
-
-    #[test]
-    fn telemetry_backlog_warn_and_crit_triggers() {
-        let mut perf = PerformanceTracker::new();
-
-        // capacity learned from first enqueue
-        let mut md1 = std::collections::HashMap::new();
-        md1.insert("packet_id".into(), "P-1".into());
-        md1.insert("queue_len".into(), "25".into());      // 25% of 100 -> warn
-        md1.insert("queue_capacity".into(), "100".into());
-        perf.record_performance_event(PerformanceEvent {
-            timestamp: now_ts(),
-            event_type: EventType::TelemetryEnqueued,
-            duration_ms: 0.0,
-            metadata: md1,
-        });
-
-        // critical ratio
-        let mut md2 = std::collections::HashMap::new();
-        md2.insert("packet_id".into(), "P-2".into());
-        md2.insert("queue_len".into(), "75".into());      // 75% of 100 -> critical
-        // capacity stays remembered
-        perf.record_performance_event(PerformanceEvent {
-            timestamp: now_ts(),
-            event_type: EventType::TelemetryEnqueued,
-            duration_ms: 0.0,
-            metadata: md2,
-        });
-
-        let stats = perf.snapshot_current_stats();
-        assert_eq!(stats.backlog_warn_events, 1, "should count one warn");
-        assert_eq!(stats.backlog_critical_events, 1, "should count one critical");
-        assert!(stats.total_performance_violations >= 1, "critical should contribute to violations");
-    }
-
-    #[test]
-    fn uplink_jitter_samples_are_aggregated() {
-        let mut perf = PerformanceTracker::new();
-
-        // Feed a few interval/jitter samples
-        for (int_ms, jit_ms) in &[(1000.0, 0.0), (1003.0, 3.0), (1012.0, 12.0)] {
-            let mut md = std::collections::HashMap::new();
-            md.insert("uplink_interval_ms".into(), format!("{:.3}", int_ms));
-            md.insert("uplink_jitter_ms".into(),   format!("{:.3}", jit_ms));
-            md.insert("uplink_expected_ms".into(), "1000.0".into());
-            perf.record_performance_event(PerformanceEvent {
-                timestamp: now_ts(),
-                event_type: EventType::UplinkIntervalSample,
-                duration_ms: *int_ms,
-                metadata: md,
-            });
-        }
-
-        let stats = perf.snapshot_current_stats();
-        // We pushed a 12ms jitter; percentiles should be >= 0
-        assert!(stats.p95_uplink_jitter_ms >= 0.0);
-        assert!(stats.p99_uplink_jitter_ms >= 0.0);
-        assert!(stats.max_uplink_jitter_ms >= 12.0, "should reflect max jitter observed");
-        assert!(stats.avg_uplink_interval_ms > 0.0, "should average intervals");
-    }
-}
-*/
