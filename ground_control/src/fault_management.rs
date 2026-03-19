@@ -133,6 +133,10 @@ pub struct FaultManager {
     loc_active_since: Option<DateTime<Utc>>,
     loc_events: u32,
     loc_total_duration_ms: f64,
+
+    /// Interlock IDs released during the last reconcile pass.
+    /// Drained by the command scheduler to requeue blocked commands.
+    recently_released_interlocks: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -200,6 +204,7 @@ impl FaultManager {
             loc_active_since: None,
             loc_events: 0,
             loc_total_duration_ms: 0.0,
+            recently_released_interlocks: Vec::new(),
         }
     }
 
@@ -257,7 +262,6 @@ impl FaultManager {
             };
             self.active_faults.insert(fault_id.clone(), active_fault);
             self.total_faults_detected += 1;
-
         }
 
         match fault_event.fault_type {
@@ -296,7 +300,7 @@ impl FaultManager {
 
         if is_critical_ground_alert {
             error!(
-                "Fault Response Window Exceeded {}ms: {:.3}ms",
+                "CRITICAL GROUND ALERT - Fault Response Window Exceeded {}ms: {:.3}ms",
                 self.critical_response_time_ms, response_time
             );
             self.total_response_time_critical_alerts += 1;
@@ -419,7 +423,7 @@ impl FaultManager {
             "emergency_loss_of_contact".to_string(),
             vec![FaultType::CommunicationLoss, FaultType::NetworkError],
             vec!["cpu_intensive_tasks".to_string(), "non_essential".to_string(), "payload_activation".to_string(),
-                 "heating".to_string(), "high_power".to_string(), "precise_maneuver".to_string(), "emergency_bypass".to_string()],
+                 "heating".to_string(), "high_power".to_string(), "precise_maneuver".to_string()],
             vec!["all_systems".to_string()],
             "Emergency: Complete Loss Of Satellite Contact".to_string(),
             Some(fault_id.clone()),
@@ -610,7 +614,7 @@ impl FaultManager {
                 self.activate_safety_interlock(
                     interlock_id.clone(),
                     vec![FaultType::AttitudeAnomaly],
-                    vec!["payload_activation".to_string(), "non_essential".to_string(), 
+                    vec!["payload_activation".to_string(), "non_essential".to_string(),
                     "cpu_intensive_tasks".to_string(), "precise_maneuver".to_string()],
                     vec!["attitude_control".to_string()],
                     format!("Critical Attitude Error Detected: {}", fault_event.description),
@@ -1081,7 +1085,6 @@ impl FaultManager {
                 );
             }
 
-
             info!(
                 "Fault Resolved: {} | Outcome={} | ResolutionTime={:.3}ms",
                 active_fault.fault_id, outcome_label, resolution_ms
@@ -1120,12 +1123,24 @@ impl FaultManager {
 
                 self.interlock_total_active_ms += dur_ms;
                 self.interlock_releases += 1;
+                self.recently_released_interlocks.push(interlock_id.clone());
 
                 info!(
                     "Deactivated Interlock {} (Active {:.3} ms)", interlock_id, dur_ms
                 );
             }
         }
+    }
+
+    /// Returns interlock IDs released since the last call.
+    /// Call this from the command scheduler after each dispatch cycle to
+    /// requeue any commands that were held behind those interlocks.
+    /// LOC interlocks are excluded — those require operator decision to retry.
+    pub fn drain_released_interlock_ids(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.recently_released_interlocks)
+            .into_iter()
+            .filter(|id|  id != "emergency_comm_loss")
+            .collect()
     }
 
     pub fn increment_consecutive_failures(&mut self) {
@@ -1418,7 +1433,6 @@ impl std::hash::Hash for FaultType {
 //     pub fault_id: String,
 //     pub response_timestamp: DateTime<Utc>,
 //     pub response_time_ms: f64,
-//     pub recommended_action: Option<String>,
 //     pub safety_interlocks_triggered: Vec<String>,
 //     pub commands_blocked: Vec<String>,
 //     pub auto_recovery_attempted: bool,
@@ -1574,14 +1588,13 @@ impl std::hash::Hash for FaultType {
 //         let handler_started_at = std::time::Instant::now();
 //         let response_timestamp = Utc::now();
 
-//         info!("Fault Intake Received: {:?} | {}", fault_event.fault_type, fault_event.description);
+//         warn!("Fault Intake Received: {:?} | {}", fault_event.fault_type, fault_event.description);
 
 //         let fault_id = self.generate_fault_id(&fault_event);
 //         let mut response = FaultResponse {
 //             fault_id: fault_id.clone(),
 //             response_timestamp,
 //             response_time_ms: 0.0,
-//             recommended_action: None,
 //             safety_interlocks_triggered: Vec::new(),
 //             commands_blocked: Vec::new(),
 //             auto_recovery_attempted: false,
@@ -1596,7 +1609,7 @@ impl std::hash::Hash for FaultType {
 //                 active_fault.occurrence_count += 1;
 //                 warn!("Recurring Fault Observed: {} (Count #{})", fault_id, active_fault.occurrence_count);
 //                 if active_fault.occurrence_count >= 3 {
-//                     response.recommended_action = Some("Escalate To Critical - Repeated Fault Pattern".to_string());
+//                     warn!("Escalate Fault - Repeated Pattern");
 //                 }
 //             }
 //         }
@@ -1624,9 +1637,7 @@ impl std::hash::Hash for FaultType {
 //             };
 //             self.active_faults.insert(fault_id.clone(), active_fault);
 //             self.total_faults_detected += 1;
-//             // CSV write is intentionally deferred — the label ("detected" vs
-//             // "critical_alert_detected") depends on response_time, which is
-//             // only known after all fault handlers have run (see below).
+
 //         }
 
 //         match fault_event.fault_type {
@@ -1686,27 +1697,23 @@ impl std::hash::Hash for FaultType {
 //             }
 
 //             response.auto_recovery_attempted = true;
-//             response.recommended_action = Some(format!(
-//                 "CRITICAL GROUND ALERT (> {:.0}ms): prioritized recovery workflow engaged",
-//                 self.critical_response_time_ms
-//             ));
 
 //             // Always record a row in the critical alerts CSV for every critical alert, not just new faults
-        //     Self::append_fault_recovery_csv_entry(
-        //         CRITICAL_ALERT_LOG_PATH,
-        //         "detected",
-        //         &fault_id,
-        //         &fault_event.fault_type,
-        //         &fault_event.severity,
-        //         &fault_event.description,
-        //         None,
-        //         Some(fault_event.timestamp),
-        //         None,
-        //         false,
-        //         Some(response_time),
-        //         None,
-        //     );
-        // }
+//             Self::append_fault_recovery_csv_entry(
+//                 CRITICAL_ALERT_LOG_PATH,
+//                 "detected",
+//                 &fault_id,
+//                 &fault_event.fault_type,
+//                 &fault_event.severity,
+//                 &fault_event.description,
+//                 None,
+//                 Some(fault_event.timestamp),
+//                 None,
+//                 false,
+//                 Some(response_time),
+//                 None,
+//             );
+//         }
 
 //         // New faults always get a detection row in the main CSV.
 //         // If response time exceeded the threshold, mirror the same row to the
@@ -1768,7 +1775,6 @@ impl std::hash::Hash for FaultType {
 //                 fault_id: "loss_of_contact_ongoing".to_string(),
 //                 response_timestamp: Utc::now(),
 //                 response_time_ms: 0.0,
-//                 recommended_action: None,
 //                 safety_interlocks_triggered: vec![],
 //                 commands_blocked: vec![],
 //                 auto_recovery_attempted: false,
@@ -1792,8 +1798,9 @@ impl std::hash::Hash for FaultType {
 //         self.activate_safety_interlock(
 //             "emergency_loss_of_contact".to_string(),
 //             vec![FaultType::CommunicationLoss, FaultType::NetworkError],
-//             vec!["non_essential".to_string(), "experimental".to_string(), "high_power".to_string()],
-//             vec!["all_non_critical".to_string()],
+//             vec!["cpu_intensive_tasks".to_string(), "non_essential".to_string(), "payload_activation".to_string(),
+//                  "heating".to_string(), "high_power".to_string(), "precise_maneuver".to_string(), "emergency_bypass".to_string()],
+//             vec!["all_systems".to_string()],
 //             "Emergency: Complete Loss Of Satellite Contact".to_string(),
 //             Some(fault_id.clone()),
 //             Some(fault_event.timestamp),
@@ -1803,11 +1810,11 @@ impl std::hash::Hash for FaultType {
 //         self.loc_events += 1;
 //         self.auto_recovery_attempts += 1;
 
+//         warn!("EMERGENCY: Loss Of Contact - Execute Backup Procedures");
 //         Ok(FaultResponse {
 //             fault_id: "loss_of_contact_emergency".to_string(),
 //             response_timestamp: Utc::now(),
 //             response_time_ms: 0.0,
-//             recommended_action: Some("EMERGENCY: Loss Of Contact - Execute Backup Procedures".to_string()),
 //             safety_interlocks_triggered: vec!["emergency_loss_of_contact".to_string()],
 //             commands_blocked: vec![
 //                 "all_non_essential".to_string(),
@@ -1840,8 +1847,8 @@ impl std::hash::Hash for FaultType {
 //                 self.activate_safety_interlock(
 //                     interlock_id.clone(),
 //                     vec![FaultType::NetworkError, FaultType::CommunicationLoss],
-//                     vec!["non_essential".to_string(), "experimental".to_string()],
-//                     vec!["instruments".to_string(), "payload".to_string()],
+//                     vec!["cpu_intensive_tasks".to_string(), "non_essential".to_string(), "payload_activation".to_string()],
+//                     vec!["all_systems".to_string()],
 //                     "Communication Loss Condition Detected".to_string(),
 //                     Some(fault_id.to_string()),
 //                     Some(fault_event.timestamp),
@@ -1858,12 +1865,12 @@ impl std::hash::Hash for FaultType {
 //                 }
 //                 self.auto_recovery_attempts += 1;
 //             }
-//             response.recommended_action = Some("LOSS OF CONTACT - Emergency Procedures Active".to_string());
+//             warn!("LOSS OF CONTACT - Emergency Procedures Active");
 //         } else {
-//             response.recommended_action = Some(format!(
+//             warn!(
 //                 "Network Instability Detected ({}/{} Failures) - Continue Communication Monitoring",
 //                 self.consecutive_network_failures, self.loss_of_contact_threshold
-//             ));
+//             );
 //         }
 //         Ok(response)
 //     }
@@ -1877,13 +1884,14 @@ impl std::hash::Hash for FaultType {
 
 //         match fault_event.severity {
 //             Severity::Critical => {
-//                 response.recommended_action = Some("THERMAL EMERGENCY - Engage Cooling Systems".to_string());
+//                 warn!("THERMAL EMERGENCY - Engage Cooling Systems");
 //                 let interlock_id = "thermal_emergency".to_string();
 //                 self.activate_safety_interlock(
 //                     interlock_id.clone(),
 //                     vec![FaultType::ThermalAnomaly],
-//                     vec!["power_intensive".to_string(), "heating".to_string()],
-//                     vec!["thermal_management".to_string()],
+//                     vec!["high_power".to_string(), "non_essential".to_string(),
+//                          "payload_activation".to_string(), "cpu_intensive_tasks".to_string()],
+//                     vec!["power_management".to_string()],
 //                     format!("Critical Thermal Condition Detected: {}", fault_event.description),
 //                     Some(fault_id.to_string()),
 //                     Some(fault_event.timestamp),
@@ -1904,7 +1912,7 @@ impl std::hash::Hash for FaultType {
 //             }
 
 //             Severity::High => {
-//                 response.recommended_action = Some("Thermal Warning - Increase Monitoring And Cooling".to_string());
+//                 warn!("Thermal Warning - Increase Monitoring And Cooling");
 //                 response.commands_blocked.extend(vec![
 //                     "heater_activation".to_string(),
 //                     "cpu_intensive_tasks".to_string(),
@@ -1912,7 +1920,7 @@ impl std::hash::Hash for FaultType {
 //             }
 
 //             _ => {
-//                 response.recommended_action = Some("Thermal Anomaly Detected - Track Temperature Trends".to_string());
+//                 warn!("Thermal Anomaly Detected - Track Temperature Trends");
 //             }
 //         }
 //         Ok(response)
@@ -1926,13 +1934,14 @@ impl std::hash::Hash for FaultType {
 //     ) -> Result<FaultResponse> {
 //         match fault_event.severity {
 //             Severity::Critical => {
-//                 response.recommended_action = Some("POWER CRITICAL - Enter Power Conservation Mode".to_string());
+//                 warn!("POWER CRITICAL - Enter Power Conservation Mode");
 //                 let interlock_id = "power_conservation".to_string();
 //                 self.activate_safety_interlock(
 //                     interlock_id.clone(),
 //                     vec![FaultType::PowerAnomaly],
-//                     vec!["high_power".to_string(), "non_essential".to_string()],
-//                     vec!["power_management".to_string()],
+//                     vec!["heating".to_string(), "non_essential".to_string(),
+//                          "payload_activation".to_string(), "cpu_intensive_tasks".to_string()],
+//                     vec!["thermal_management".to_string()],
 //                     format!("Critical Power Condition Detected: {}", fault_event.description),
 //                     Some(fault_id.to_string()),
 //                     Some(fault_event.timestamp),
@@ -1954,7 +1963,7 @@ impl std::hash::Hash for FaultType {
 //             }
 
 //             Severity::High => {
-//                 response.recommended_action = Some("Power Warning - Reduce Non-Essential Systems".to_string());
+//                 warn!("Power Warning - Reduce Non-Essential Systems");
 //                 response.commands_blocked.extend(vec![
 //                     "payload_high_power".to_string(),
 //                     "experimental_mode".to_string(),
@@ -1962,7 +1971,7 @@ impl std::hash::Hash for FaultType {
 //             }
 
 //             _ => {
-//                 response.recommended_action = Some("Power Anomaly Detected - Monitor Battery And Consumption".to_string());
+//                 warn!("Power Anomaly Detected - Monitor Battery And Consumption");
 //             }
 //         }
 //         Ok(response)
@@ -1976,13 +1985,14 @@ impl std::hash::Hash for FaultType {
 //     ) -> Result<FaultResponse> {
 //         match fault_event.severity {
 //             Severity::Critical => {
-//                 response.recommended_action = Some("ATTITUDE CRITICAL - Stabilization Required".to_string());
+//                 warn!("ATTITUDE CRITICAL - Stabilization Required");
 //                 let interlock_id = "attitude_stabilization".to_string();
 //                 self.activate_safety_interlock(
 //                     interlock_id.clone(),
 //                     vec![FaultType::AttitudeAnomaly],
-//                     vec!["pointing_required".to_string(), "precise_maneuver".to_string()],
-//                     vec!["precise_maneuver".to_string()],
+//                     vec!["payload_activation".to_string(), "non_essential".to_string(), 
+//                     "cpu_intensive_tasks".to_string(), "precise_maneuver".to_string()],
+//                     vec!["attitude_control".to_string()],
 //                     format!("Critical Attitude Error Detected: {}", fault_event.description),
 //                     Some(fault_id.to_string()),
 //                     Some(fault_event.timestamp),
@@ -2004,7 +2014,7 @@ impl std::hash::Hash for FaultType {
 //             }
 
 //             Severity::High => {
-//                 response.recommended_action = Some("Attitude Warning - Verify Control System".to_string());
+//                 warn!("Attitude Warning - Verify Control System");
 //                 response.commands_blocked.extend(vec![
 //                     "precision_pointing".to_string(),
 //                     "complex_maneuvers".to_string(),
@@ -2012,7 +2022,7 @@ impl std::hash::Hash for FaultType {
 //             }
 
 //             _ => {
-//                 response.recommended_action = Some("Attitude Anomaly Detected - Monitor Stability".to_string());
+//                 warn!("Attitude Anomaly Detected - Monitor Stability");
 //             }
 //         }
 //         Ok(response)
@@ -2024,7 +2034,7 @@ impl std::hash::Hash for FaultType {
 //         mut response: FaultResponse,
 //         fault_id: &str
 //     ) -> Result<FaultResponse> {
-//         response.recommended_action = Some("System Overload Detected - Reduce Computational Load".to_string());
+//         warn!("System Overload Detected - Reduce Computational Load");
 //         response.commands_blocked.extend(vec![
 //             "data_processing_intensive".to_string(),
 //             "multiple_simultaneous_operations".to_string(),
@@ -2035,8 +2045,8 @@ impl std::hash::Hash for FaultType {
 //         self.activate_safety_interlock(
 //             interlock_id.clone(),
 //             vec![FaultType::SystemOverload],
-//             vec!["cpu_intensive".to_string(), "memory_intensive".to_string()],
-//             vec!["processing".to_string()],
+//             vec!["cpu_intensive_tasks".to_string(), "payload_activation".to_string(), "non_essential".to_string()],
+//             vec!["all_systems".to_string()],
 //             "System Resource Overload Detected".to_string(),
 //             Some(fault_id.to_string()),
 //             Some(Utc::now()),
@@ -2057,10 +2067,7 @@ impl std::hash::Hash for FaultType {
 //         mut response: FaultResponse,
 //         _fault_id: &str
 //     ) -> Result<FaultResponse> {
-//         response.recommended_action = Some(format!(
-//             "Generic Fault Handling Path For {:?}: {}",
-//             fault_event.fault_type, fault_event.description
-//         ));
+//         warn!("Generic Fault Handling Path For {:?}: {}", fault_event.fault_type, fault_event.description);
 
 //         if fault_event.severity <= Severity::High {
 //             response.commands_blocked.extend(vec![
