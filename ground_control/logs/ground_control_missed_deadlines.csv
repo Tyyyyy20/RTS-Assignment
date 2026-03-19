@@ -1,4 +1,1 @@
 ts,command_id,command_type,target_system,priority,send_time_ms,deadline_violation_ms,reason
-2026-03-18T18:07:41.075240800+00:00,30261cac-8084-40c3-90f7-0d44731d451d,Emergency,AllSystems,0,0.000,85.218,dispatch_rejected_past_deadline;deadline_missed
-2026-03-18T18:07:51.291169500+00:00,4fcb8508-b579-46d3-972e-6cd71c3b0993,Emergency,AllSystems,0,0.000,302.065,dispatch_rejected_past_deadline;deadline_missed
-2026-03-18T23:38:41.309603300+00:00,4be56de0-ca93-4bc9-ba9d-be8775933aa2,Emergency,AllSystems,0,0.000,39.777,dispatch_rejected_past_deadline;deadline_missed
