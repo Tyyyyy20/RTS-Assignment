@@ -941,11 +941,19 @@ impl GroundControlSystem {
             drift.max_drift_ms
         );
         info!(
-            "Uplink Jitter: P95 {:.3}ms (P99 {:.3}ms, max {:.3}ms) | Avg Interval {:.3}ms",
+            "Uplink Jitter: P95 {:.3}ms, P99 {:.3}ms, max {:.3}ms | Avg Interval {:.3}ms",
             final_stats.p95_uplink_jitter_ms,
             final_stats.p99_uplink_jitter_ms,
             final_stats.max_uplink_jitter_ms,
             final_stats.avg_uplink_interval_ms
+        );
+        info!(
+            "Reception Jitter: avg {:.3}ms, stddev {:.3}ms, P95 {:.3}ms, P99 {:.3}ms, max {:.3}ms",
+            final_stats.avg_reception_jitter_ms,
+            final_stats.stddev_reception_jitter_ms,
+            final_stats.p95_reception_jitter_ms,
+            final_stats.p99_reception_jitter_ms,
+            final_stats.max_reception_jitter_ms
         );
         if final_stats.packet_to_uplink_latency_samples == 0 {
             info!("Packet-To-Uplink Latency: no samples observed in this run");
@@ -1030,6 +1038,13 @@ impl GroundControlSystem {
                 info!(" - {}", recommendation);
             }
         }
+
+        let (cmd_stats, _) = self.collect_command_scheduler_metrics().await;
+        info!(
+            "{} operations rejected, {} requeued after interlock release.",
+            cmd_stats.commands_rejected_by_interlock,
+            cmd_stats.commands_requeued_after_release
+        );
     }
 }
 

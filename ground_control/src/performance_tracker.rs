@@ -783,6 +783,41 @@ impl PerformanceTracker {
             (0.0, 0.0, 0.0, 0.0)
         };
 
+        // Reception jitter statistics (variability of packet_reception_latencies)
+        let (avg_reception_jitter, stddev_reception_jitter, p95_reception_jitter, p99_reception_jitter, max_reception_jitter) =
+            if self.packet_reception_latencies.len() > 1 {
+                let diffs: Vec<f64> = self.packet_reception_latencies
+                    .as_slices()
+                    .0
+                    .windows(2)
+                    .map(|w| (w[1] - w[0]).abs())
+                    .chain(
+                        self.packet_reception_latencies
+                            .as_slices()
+                            .1
+                            .windows(2)
+                            .map(|w| (w[1] - w[0]).abs())
+                    )
+                    .collect();
+                if !diffs.is_empty() {
+                    let avg = diffs.iter().sum::<f64>() / diffs.len() as f64;
+                    let stddev = {
+                        let mean = avg;
+                        let var = diffs.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / diffs.len() as f64;
+                        var.sqrt()
+                    };
+                    let diffs_deque: VecDeque<f64> = diffs.iter().cloned().collect();
+                    let p95 = self.compute_percentile(&diffs_deque, 95.0);
+                    let p99 = self.compute_percentile(&diffs_deque, 99.0);
+                    let max = diffs.iter().cloned().fold(0.0, f64::max);
+                    (avg, stddev, p95, p99, max)
+                } else {
+                    (0.0, 0.0, 0.0, 0.0, 0.0)
+                }
+            } else {
+                (0.0, 0.0, 0.0, 0.0, 0.0)
+            };
+
         let backlog_avg_len = if !self.telemetry_backlog_len_samples.is_empty() {
             self.telemetry_backlog_len_samples.iter().map(|&v| v as f64).sum::<f64>()
                 / self.telemetry_backlog_len_samples.len() as f64
@@ -880,6 +915,12 @@ impl PerformanceTracker {
             load1_avg:           self.system_metrics.load1_avg,
             load1_peak:          self.system_metrics.load1_peak,
             cpu_cores:           self.cpu_cores,
+
+            avg_reception_jitter_ms: avg_reception_jitter,
+            stddev_reception_jitter_ms: stddev_reception_jitter,
+            p95_reception_jitter_ms: p95_reception_jitter,
+            p99_reception_jitter_ms: p99_reception_jitter,
+            max_reception_jitter_ms: max_reception_jitter,
         }
     }
     
@@ -1163,6 +1204,13 @@ pub struct PerformanceStats {
     pub load1_peak: f64,
     
     pub cpu_cores: u32,          // helpful for interpreting load thresholds externally
+
+    // Reception jitter statistics
+    pub avg_reception_jitter_ms: f64,
+    pub stddev_reception_jitter_ms: f64,
+    pub p95_reception_jitter_ms: f64,
+    pub p99_reception_jitter_ms: f64,
+    pub max_reception_jitter_ms: f64,
 }
 
 /// Detailed performance report
