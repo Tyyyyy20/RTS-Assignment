@@ -1,7 +1,7 @@
 // performance_tracker.rs
 //
 // Presentation map:
-// - B4.1: uplink jitter, telemetry backlog, and scheduler drift benchmarking.
+// - B4.1: command dispatch jitter, telemetry backlog, and scheduler drift benchmarking.
 // - B4.2: missed deadlines, system load, and fault recovery metric aggregation.
 // - B4.3: timestamped event ledger for all real-time actions.
 // - S1/S2/S3/S4/S6: shared drift/latency/jitter/fault metrics and final-report snapshots.
@@ -25,7 +25,7 @@ pub struct PerformanceTracker {
     telemetry_processing_times: VecDeque<f64>,
     command_dispatch_times: VecDeque<f64>,
     command_response_rtt_times: VecDeque<f64>,
-    packet_to_uplink_latency_times: VecDeque<f64>,
+    packet_retransmission_latency_times: VecDeque<f64>,
     packet_reception_latencies: VecDeque<f64>,
     fault_recovery_mttr_samples_ms: VecDeque<f64>,
     fault_response_avg_samples_ms: VecDeque<f64>,
@@ -39,10 +39,15 @@ pub struct PerformanceTracker {
     performance_window_minutes: i64,
 
     //
-    _uplink_jitter_threshold_ms: f64,
-    uplink_interarrival_ms: VecDeque<f64>,
-    uplink_jitter_latest_ms: f64,          // holds the most recent jitter value
-    uplink_jitter_samples_ms: VecDeque<f64>, // rolling window of jitter samples 
+    _cmd_dispatch_jitter_threshold_ms: f64,
+    cmd_dispatch_interarrival_ms: VecDeque<f64>,
+    cmd_dispatch_jitter_latest_ms: f64,          // holds the most recent jitter value
+    cmd_dispatch_jitter_samples_ms: VecDeque<f64>, // rolling window of jitter samples 
+
+    // Retransmit uplink jitter tracking
+    retransmit_uplink_sample_times: VecDeque<std::time::Instant>,
+    retransmit_uplink_jitter_samples_ms: VecDeque<f64>,
+    retransmit_uplink_interarrival_ms: VecDeque<f64>,
 
     task_drift_ms: VecDeque<f64>,            // NEW
     task_drift_warn_ms: f64,                 // NEW (optional)
@@ -124,7 +129,7 @@ pub enum EventType {
     TaskExecutionDrift,
     SchedulerPrecisionViolation,
 
-    UplinkIntervalSample,    // will be carrying interval + expected + jitter in metadata
+    CommandDispatchIntervalSample,    // will be carrying interval + expected + jitter in metadata
 
     TelemetryEnqueued,   // metadata: packet_id, queue_len, queue_capacity
     TelemetryDequeued,   // metadata: packet_id, queue_len, queue_capacity
@@ -219,7 +224,7 @@ impl PerformanceTracker {
             telemetry_processing_times: VecDeque::new(),
             command_dispatch_times: VecDeque::new(),
             command_response_rtt_times: VecDeque::new(),
-            packet_to_uplink_latency_times: VecDeque::new(),
+            packet_retransmission_latency_times: VecDeque::new(),
             packet_reception_latencies: VecDeque::new(),
             fault_recovery_mttr_samples_ms: VecDeque::new(),
             fault_response_avg_samples_ms: VecDeque::new(),
@@ -229,10 +234,14 @@ impl PerformanceTracker {
             performance_window_minutes: 30,
 
             // new
-            _uplink_jitter_threshold_ms: 10.0,
-            uplink_interarrival_ms: VecDeque::new(),
-            uplink_jitter_latest_ms: 0.0,
-            uplink_jitter_samples_ms: VecDeque::new(),
+            _cmd_dispatch_jitter_threshold_ms: 10.0,
+            cmd_dispatch_interarrival_ms: VecDeque::new(),
+            cmd_dispatch_jitter_latest_ms: 0.0,
+            cmd_dispatch_jitter_samples_ms: VecDeque::new(),
+
+            retransmit_uplink_sample_times: VecDeque::new(),
+            retransmit_uplink_jitter_samples_ms: VecDeque::new(),
+            retransmit_uplink_interarrival_ms: VecDeque::new(),
 
             task_drift_ms: VecDeque::new(),
             task_drift_warn_ms: 2.0,       // warn at >2ms
@@ -340,12 +349,30 @@ impl PerformanceTracker {
             
             EventType::PacketRetransmissionRequested => {
                 self.network_metrics.retransmission_requests += 1;
+                // Track retransmit uplink jitter
+                let now = std::time::Instant::now();
+                if let Some(prev) = self.retransmit_uplink_sample_times.back() {
+                    let interval_ms = (now.duration_since(*prev)).as_secs_f64() * 1000.0;
+                    self.retransmit_uplink_interarrival_ms.push_back(interval_ms);
+                    let jitter_ms = (interval_ms - 1.0).abs();
+                    self.retransmit_uplink_jitter_samples_ms.push_back(jitter_ms);
+                    if self.retransmit_uplink_jitter_samples_ms.len() > 1000 {
+                        self.retransmit_uplink_jitter_samples_ms.pop_front();
+                    }
+                    if self.retransmit_uplink_interarrival_ms.len() > 1000 {
+                        self.retransmit_uplink_interarrival_ms.pop_front();
+                    }
+                }
+                self.retransmit_uplink_sample_times.push_back(now);
+                if self.retransmit_uplink_sample_times.len() > 2 {
+                    self.retransmit_uplink_sample_times.pop_front();
+                }
             }
 
             EventType::PacketToUplinkLatencySample => {
-                self.packet_to_uplink_latency_times.push_back(event.duration_ms);
-                if self.packet_to_uplink_latency_times.len() > 1000 {
-                    self.packet_to_uplink_latency_times.pop_front();
+                self.packet_retransmission_latency_times.push_back(event.duration_ms);
+                if self.packet_retransmission_latency_times.len() > 1000 {
+                    self.packet_retransmission_latency_times.pop_front();
                 }
             }
             
@@ -388,18 +415,18 @@ impl PerformanceTracker {
                 }
             }
 
-            EventType::UplinkIntervalSample => {
-                if let Some(interval_s) = event.metadata.get("uplink_interval_ms") {
+            EventType::CommandDispatchIntervalSample => {
+                if let Some(interval_s) = event.metadata.get("cmd_dispatch_interval_ms") {
                     if let Ok(v) = interval_s.parse::<f64>() {
-                        self.uplink_interarrival_ms.push_back(v);
-                        if self.uplink_interarrival_ms.len() > 1000 { self.uplink_interarrival_ms.pop_front(); }
+                        self.cmd_dispatch_interarrival_ms.push_back(v);
+                        if self.cmd_dispatch_interarrival_ms.len() > 1000 { self.cmd_dispatch_interarrival_ms.pop_front(); }
                     }
                 }
-                if let Some(jitter_s) = event.metadata.get("uplink_jitter_ms") {
+                if let Some(jitter_s) = event.metadata.get("cmd_dispatch_jitter_ms") {
                     if let Ok(j) = jitter_s.parse::<f64>() {
-                        self.uplink_jitter_latest_ms = j; // keep “latest” for quick view
-                        self.uplink_jitter_samples_ms.push_back(j);
-                        if self.uplink_jitter_samples_ms.len() > 1000 { self.uplink_jitter_samples_ms.pop_front(); }
+                        self.cmd_dispatch_jitter_latest_ms = j; // keep “latest” for quick view
+                        self.cmd_dispatch_jitter_samples_ms.push_back(j);
+                        if self.cmd_dispatch_jitter_samples_ms.len() > 1000 { self.cmd_dispatch_jitter_samples_ms.pop_front(); }
                     }
                 }
             }
@@ -676,8 +703,8 @@ impl PerformanceTracker {
             self.command_response_rtt_times.pop_front();
         }
 
-        if self.packet_to_uplink_latency_times.len() > max_timing_samples {
-            self.packet_to_uplink_latency_times.pop_front();
+        if self.packet_retransmission_latency_times.len() > max_timing_samples {
+            self.packet_retransmission_latency_times.pop_front();
         }
 
         if self.fault_recovery_mttr_samples_ms.len() > max_timing_samples {
@@ -702,8 +729,8 @@ impl PerformanceTracker {
             }
         }
 
-        if self.uplink_jitter_samples_ms.len() > max_timing_samples {
-            self.uplink_jitter_samples_ms.pop_front();
+        if self.cmd_dispatch_jitter_samples_ms.len() > max_timing_samples {
+            self.cmd_dispatch_jitter_samples_ms.pop_front();
         }
 
         if self.telemetry_backlog_len_samples.len() > max_timing_samples {
@@ -717,6 +744,50 @@ impl PerformanceTracker {
     
     /// Get comprehensive performance statistics
     pub fn snapshot_current_stats(&self) -> PerformanceStats {
+            // Combine command dispatch and packet retransmission latencies for overall packet-to-uplink latency
+            let mut overall_packet_to_uplink_latency_times = self.command_dispatch_times.clone();
+            overall_packet_to_uplink_latency_times.extend(self.packet_retransmission_latency_times.iter());
+            let (avg_overall_packet_to_uplink_latency_ms, p95_overall_packet_to_uplink_latency_ms, p99_overall_packet_to_uplink_latency_ms, max_overall_packet_to_uplink_latency_ms) =
+                if !overall_packet_to_uplink_latency_times.is_empty() {
+                    let sum = overall_packet_to_uplink_latency_times.iter().sum::<f64>();
+                    let avg = sum / overall_packet_to_uplink_latency_times.len() as f64;
+                    let p95 = self.compute_percentile(&overall_packet_to_uplink_latency_times, 95.0);
+                    let p99 = self.compute_percentile(&overall_packet_to_uplink_latency_times, 99.0);
+                    let max = overall_packet_to_uplink_latency_times.iter().cloned().fold(0.0, f64::max);
+                    (avg, p95, p99, max)
+                } else {
+                    (0.0, 0.0, 0.0, 0.0)
+                };
+            let overall_packet_to_uplink_latency_samples = overall_packet_to_uplink_latency_times.len() as u64;
+    // Overall uplink jitter stats (combine both samples)
+    let mut overall_jitter_samples = self.cmd_dispatch_jitter_samples_ms.clone();
+    overall_jitter_samples.extend(self.retransmit_uplink_jitter_samples_ms.iter());
+    let mut overall_interval_samples = self.cmd_dispatch_interarrival_ms.clone();
+    overall_interval_samples.extend(self.retransmit_uplink_interarrival_ms.iter());
+    let avg_overall_uplink_interval = if !overall_interval_samples.is_empty() {
+        overall_interval_samples.iter().sum::<f64>() / overall_interval_samples.len() as f64
+    } else { 0.0 };
+    let p95_overall_uplink_jitter = self.compute_percentile(&overall_jitter_samples, 95.0);
+    let p99_overall_uplink_jitter = self.compute_percentile(&overall_jitter_samples, 99.0);
+    let max_overall_uplink_jitter = overall_jitter_samples.iter().cloned().fold(0.0, f64::max);
+    // Compute stddev for command dispatch jitter
+    let stddev_cmd_dispatch_jitter_ms = if !self.cmd_dispatch_jitter_samples_ms.is_empty() {
+        let mean = self.cmd_dispatch_jitter_samples_ms.iter().sum::<f64>() / self.cmd_dispatch_jitter_samples_ms.len() as f64;
+        let var = self.cmd_dispatch_jitter_samples_ms.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / self.cmd_dispatch_jitter_samples_ms.len() as f64;
+        var.sqrt()
+    } else { 0.0 };
+    // Compute stddev for retransmit uplink jitter
+    let stddev_retransmit_uplink_jitter_ms = if !self.retransmit_uplink_jitter_samples_ms.is_empty() {
+        let mean = self.retransmit_uplink_jitter_samples_ms.iter().sum::<f64>() / self.retransmit_uplink_jitter_samples_ms.len() as f64;
+        let var = self.retransmit_uplink_jitter_samples_ms.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / self.retransmit_uplink_jitter_samples_ms.len() as f64;
+        var.sqrt()
+    } else { 0.0 };
+    // Compute stddev for overall uplink jitter
+    let stddev_overall_uplink_jitter_ms = if !overall_jitter_samples.is_empty() {
+        let mean = overall_jitter_samples.iter().sum::<f64>() / overall_jitter_samples.len() as f64;
+        let var = overall_jitter_samples.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / overall_jitter_samples.len() as f64;
+        var.sqrt()
+    } else { 0.0 };
         let recent_events = self.collect_recent_events(Duration::minutes(5));
         let delayed_packets_recent = recent_events.iter()
             .filter(|e| matches!(e.event_type, EventType::PacketDelayed))
@@ -734,12 +805,12 @@ impl PerformanceTracker {
             0.0
         };
 
-        let p95_uplink_jitter = self.compute_percentile(&self.uplink_jitter_samples_ms, 95.0);
-        let p99_uplink_jitter = self.compute_percentile(&self.uplink_jitter_samples_ms, 99.0);
-        let max_uplink_jitter  = self.uplink_jitter_samples_ms.iter().cloned().fold(0.0, f64::max);
-
-        let avg_uplink_interval = if !self.uplink_interarrival_ms.is_empty() {
-            self.uplink_interarrival_ms.iter().sum::<f64>() / self.uplink_interarrival_ms.len() as f64
+        // let p95_uplink_jitter = self.compute_percentile(&self.uplink_jitter_samples_ms, 95.0);
+        let p95_cmd_dispatch_jitter = self.compute_percentile(&self.cmd_dispatch_jitter_samples_ms, 95.0);
+        let p99_cmd_dispatch_jitter = self.compute_percentile(&self.cmd_dispatch_jitter_samples_ms, 99.0);
+        let max_cmd_dispatch_jitter  = self.cmd_dispatch_jitter_samples_ms.iter().cloned().fold(0.0, f64::max);
+        let avg_cmd_dispatch_interval = if !self.cmd_dispatch_interarrival_ms.is_empty() {
+            self.cmd_dispatch_interarrival_ms.iter().sum::<f64>() / self.cmd_dispatch_interarrival_ms.len() as f64
         } else { 0.0 };
         
         // Calculate performance percentiles
@@ -759,18 +830,18 @@ impl PerformanceTracker {
             };
         let command_response_rtt_samples = self.command_response_rtt_times.len() as u64;
 
-        let (avg_packet_to_uplink_latency_ms, p95_packet_to_uplink_latency_ms, p99_packet_to_uplink_latency_ms, max_packet_to_uplink_latency_ms)
-            = if !self.packet_to_uplink_latency_times.is_empty() {
-                let sum = self.packet_to_uplink_latency_times.iter().sum::<f64>();
-                let avg = sum / self.packet_to_uplink_latency_times.len() as f64;
-                let p95 = self.compute_percentile(&self.packet_to_uplink_latency_times, 95.0);
-                let p99 = self.compute_percentile(&self.packet_to_uplink_latency_times, 99.0);
-                let max = self.packet_to_uplink_latency_times.iter().cloned().fold(0.0, f64::max);
+        let (avg_packet_retransmission_latency_ms, p95_packet_retransmission_latency_ms, p99_packet_retransmission_latency_ms, max_packet_retransmission_latency_ms)
+            = if !self.packet_retransmission_latency_times.is_empty() {
+                let sum = self.packet_retransmission_latency_times.iter().sum::<f64>();
+                let avg = sum / self.packet_retransmission_latency_times.len() as f64;
+                let p95 = self.compute_percentile(&self.packet_retransmission_latency_times, 95.0);
+                let p99 = self.compute_percentile(&self.packet_retransmission_latency_times, 99.0);
+                let max = self.packet_retransmission_latency_times.iter().cloned().fold(0.0, f64::max);
                 (avg, p95, p99, max)
             } else {
                 (0.0, 0.0, 0.0, 0.0)
             };
-        let packet_to_uplink_latency_samples = self.packet_to_uplink_latency_times.len() as u64;
+        let packet_retransmission_latency_samples = self.packet_retransmission_latency_times.len() as u64;
 
         let (avg_task_drift, max_task_drift, p95_task_drift, p99_task_drift) = if !self.task_drift_ms.is_empty() {
             let sum = self.task_drift_ms.iter().sum::<f64>();
@@ -782,6 +853,20 @@ impl PerformanceTracker {
         } else {
             (0.0, 0.0, 0.0, 0.0)
         };
+
+        // Command dispatch latency statistics
+        let (avg_command_dispatch_latency_ms, p95_command_dispatch_latency_ms, p99_command_dispatch_latency_ms, max_command_dispatch_latency_ms) =
+            if !self.command_dispatch_times.is_empty() {
+                let sum = self.command_dispatch_times.iter().sum::<f64>();
+                let avg = sum / self.command_dispatch_times.len() as f64;
+                let p95 = self.compute_percentile(&self.command_dispatch_times, 95.0);
+                let p99 = self.compute_percentile(&self.command_dispatch_times, 99.0);
+                let max = self.command_dispatch_times.iter().cloned().fold(0.0, f64::max);
+                (avg, p95, p99, max)
+            } else {
+                (0.0, 0.0, 0.0, 0.0)
+            };
+        let command_dispatch_latency_samples = self.command_dispatch_times.len() as u64;
 
         // Reception jitter statistics (variability of packet_reception_latencies)
         let (avg_reception_jitter, stddev_reception_jitter, p95_reception_jitter, p99_reception_jitter, max_reception_jitter) =
@@ -837,8 +922,27 @@ impl PerformanceTracker {
         let backlog_max_age_ms = self.telemetry_backlog_age_ms.iter().cloned().fold(0.0, f64::max);
 
 
-        
+        // Retransmit uplink jitter stats
+        let avg_retransmit_uplink_interval = if !self.retransmit_uplink_interarrival_ms.is_empty() {
+            self.retransmit_uplink_interarrival_ms.iter().sum::<f64>() / self.retransmit_uplink_interarrival_ms.len() as f64
+        } else { 0.0 };
+        let p95_retransmit_uplink_jitter = self.compute_percentile(&self.retransmit_uplink_jitter_samples_ms, 95.0);
+        let p99_retransmit_uplink_jitter = self.compute_percentile(&self.retransmit_uplink_jitter_samples_ms, 99.0);
+        let max_retransmit_uplink_jitter = self.retransmit_uplink_jitter_samples_ms.iter().cloned().fold(0.0, f64::max);
+
         PerformanceStats {
+                        avg_overall_packet_to_uplink_latency_ms,
+                        p95_overall_packet_to_uplink_latency_ms,
+                        p99_overall_packet_to_uplink_latency_ms,
+                        max_overall_packet_to_uplink_latency_ms,
+                        overall_packet_to_uplink_latency_samples,
+            stddev_cmd_dispatch_jitter_ms,
+            stddev_retransmit_uplink_jitter_ms,
+            stddev_overall_uplink_jitter_ms,
+            p95_overall_uplink_jitter_ms: p95_overall_uplink_jitter,
+            p99_overall_uplink_jitter_ms: p99_overall_uplink_jitter,
+            max_overall_uplink_jitter_ms: max_overall_uplink_jitter,
+            avg_overall_uplink_interval_ms: avg_overall_uplink_interval,
             // Telemetry performance
             total_packets_received: self.network_metrics.total_packets_received,
             total_packets_processed: self.telemetry_metrics.total_packets_processed,
@@ -872,10 +976,10 @@ impl PerformanceTracker {
             // Overall system performance
             system_health_score: self.compute_system_health_score(),
 
-            p95_uplink_jitter_ms: p95_uplink_jitter,
-            p99_uplink_jitter_ms: p99_uplink_jitter,
-            max_uplink_jitter_ms: max_uplink_jitter,
-            avg_uplink_interval_ms: avg_uplink_interval,
+            p95_cmd_dispatch_jitter_ms: p95_cmd_dispatch_jitter,
+            p99_cmd_dispatch_jitter_ms: p99_cmd_dispatch_jitter,
+            max_cmd_dispatch_jitter_ms: max_cmd_dispatch_jitter,
+            avg_cmd_dispatch_interval_ms: avg_cmd_dispatch_interval,
 
             avg_task_drift_ms: avg_task_drift,
             max_task_drift_ms: max_task_drift,
@@ -888,11 +992,11 @@ impl PerformanceTracker {
             max_command_response_rtt_ms,
             command_response_rtt_samples,
 
-            avg_packet_to_uplink_latency_ms,
-            p95_packet_to_uplink_latency_ms,
-            p99_packet_to_uplink_latency_ms,
-            max_packet_to_uplink_latency_ms,
-            packet_to_uplink_latency_samples,
+            avg_packet_retransmission_latency_ms,
+            p95_packet_retransmission_latency_ms,
+            p99_packet_retransmission_latency_ms,
+            max_packet_retransmission_latency_ms,
+            packet_retransmission_latency_samples,
 
             backlog_avg_len,
             backlog_p95_len,
@@ -921,6 +1025,16 @@ impl PerformanceTracker {
             p95_reception_jitter_ms: p95_reception_jitter,
             p99_reception_jitter_ms: p99_reception_jitter,
             max_reception_jitter_ms: max_reception_jitter,
+            p95_retransmit_uplink_jitter_ms: p95_retransmit_uplink_jitter,
+            p99_retransmit_uplink_jitter_ms: p99_retransmit_uplink_jitter,
+            max_retransmit_uplink_jitter_ms: max_retransmit_uplink_jitter,
+            avg_retransmit_uplink_interval_ms: avg_retransmit_uplink_interval,
+
+            avg_command_dispatch_latency_ms,
+            p95_command_dispatch_latency_ms,
+            p99_command_dispatch_latency_ms,
+            max_command_dispatch_latency_ms,
+            command_dispatch_latency_samples,
         }
     }
     
@@ -1126,6 +1240,31 @@ impl PerformanceTracker {
 /// Comprehensive performance statistics
 #[derive(Debug, Clone)]
 pub struct PerformanceStats {
+    // Overall packet to uplink latency (command dispatch + retransmission)
+    pub avg_overall_packet_to_uplink_latency_ms: f64,
+    pub p95_overall_packet_to_uplink_latency_ms: f64,
+    pub p99_overall_packet_to_uplink_latency_ms: f64,
+    pub max_overall_packet_to_uplink_latency_ms: f64,
+    pub overall_packet_to_uplink_latency_samples: u64,
+    pub stddev_cmd_dispatch_jitter_ms: f64,
+    pub stddev_retransmit_uplink_jitter_ms: f64,
+    pub stddev_overall_uplink_jitter_ms: f64,
+    // Overall uplink jitter stats
+    pub p95_overall_uplink_jitter_ms: f64,
+    pub p99_overall_uplink_jitter_ms: f64,
+    pub max_overall_uplink_jitter_ms: f64,
+    pub avg_overall_uplink_interval_ms: f64,
+    // Retransmit uplink jitter stats
+    pub p95_retransmit_uplink_jitter_ms: f64,
+    pub p99_retransmit_uplink_jitter_ms: f64,
+    pub max_retransmit_uplink_jitter_ms: f64,
+    pub avg_retransmit_uplink_interval_ms: f64,
+    // Retransmission latency stats
+    pub avg_packet_retransmission_latency_ms: f64,
+    pub p95_packet_retransmission_latency_ms: f64,
+    pub p99_packet_retransmission_latency_ms: f64,
+    pub max_packet_retransmission_latency_ms: f64,
+    pub packet_retransmission_latency_samples: u64,
     // Processing performance
     pub total_packets_received: u64,
     pub total_packets_processed: u64,
@@ -1157,10 +1296,10 @@ pub struct PerformanceStats {
     pub uptime_percentage: f64,
     pub system_health_score: f64,
 
-    pub p95_uplink_jitter_ms: f64,
-    pub p99_uplink_jitter_ms: f64,
-    pub max_uplink_jitter_ms: f64,
-    pub avg_uplink_interval_ms: f64,
+    pub p95_cmd_dispatch_jitter_ms: f64,
+    pub p99_cmd_dispatch_jitter_ms: f64,
+    pub max_cmd_dispatch_jitter_ms: f64,
+    pub avg_cmd_dispatch_interval_ms: f64,
 
     pub avg_task_drift_ms: f64,
     pub max_task_drift_ms: f64,
@@ -1173,11 +1312,6 @@ pub struct PerformanceStats {
     pub max_command_response_rtt_ms: f64,
     pub command_response_rtt_samples: u64,
 
-    pub avg_packet_to_uplink_latency_ms: f64,
-    pub p95_packet_to_uplink_latency_ms: f64,
-    pub p99_packet_to_uplink_latency_ms: f64,
-    pub max_packet_to_uplink_latency_ms: f64,
-    pub packet_to_uplink_latency_samples: u64,
 
     pub backlog_avg_len: f64,
     pub backlog_p95_len: f64,
@@ -1211,6 +1345,12 @@ pub struct PerformanceStats {
     pub p95_reception_jitter_ms: f64,
     pub p99_reception_jitter_ms: f64,
     pub max_reception_jitter_ms: f64,
+    // Command dispatch latency stats
+    pub avg_command_dispatch_latency_ms: f64,
+    pub p95_command_dispatch_latency_ms: f64,
+    pub p99_command_dispatch_latency_ms: f64,
+    pub max_command_dispatch_latency_ms: f64,
+    pub command_dispatch_latency_samples: u64,
 }
 
 /// Detailed performance report

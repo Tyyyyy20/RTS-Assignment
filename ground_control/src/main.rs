@@ -728,19 +728,19 @@ impl GroundControlSystem {
                     }
 
                     if tick % 2 == 0 {
-                        // Sample uplink cadence/jitter on each dispatch cycle (ideal interval = 1ms).
+                        // Sample command dispatch cadence/jitter on each dispatch cycle (ideal interval = 1ms).
                         let now = std::time::Instant::now();
                         if let Some(prev) = last_uplink_sample_at {
                             let interval_ms = (now - prev).as_secs_f64() * 1000.0;
                             let jitter_ms = (interval_ms - 1.0).abs();
                             let _ = performance_tx.send(PerformanceEvent {
                                 timestamp: Utc::now(),
-                                event_type: EventType::UplinkIntervalSample,
+                                event_type: EventType::CommandDispatchIntervalSample,
                                 duration_ms: interval_ms,
                                 metadata: {
                                     let mut m = std::collections::HashMap::new();
-                                    m.insert("uplink_interval_ms".into(), format!("{interval_ms:.3}"));
-                                    m.insert("uplink_jitter_ms".into(), format!("{jitter_ms:.3}"));
+                                    m.insert("cmd_dispatch_interval_ms".into(), format!("{interval_ms:.3}"));
+                                    m.insert("cmd_dispatch_jitter_ms".into(), format!("{jitter_ms:.3}"));
                                     m.insert("expected_interval_ms".into(), "1.000".into());
                                     m.insert("tick".into(), tick.to_string());
                                     m
@@ -754,7 +754,7 @@ impl GroundControlSystem {
                                     duration_ms: jitter_ms,
                                     metadata: {
                                         let mut m = std::collections::HashMap::new();
-                                        m.insert("uplink_jitter_ms".into(), format!("{jitter_ms:.3}"));
+                                        m.insert("cmd_dispatch_jitter_ms".into(), format!("{jitter_ms:.3}"));
                                         m.insert("threshold_ms".into(), "10.0".into());
                                         m.insert("tick".into(), tick.to_string());
                                         m
@@ -941,11 +941,28 @@ impl GroundControlSystem {
             drift.max_drift_ms
         );
         info!(
-            "Uplink Jitter: P95 {:.3}ms, P99 {:.3}ms, max {:.3}ms | Avg Interval {:.3}ms",
-            final_stats.p95_uplink_jitter_ms,
-            final_stats.p99_uplink_jitter_ms,
-            final_stats.max_uplink_jitter_ms,
-            final_stats.avg_uplink_interval_ms
+            "Command Dispatch Jitter: stddev {:.3}ms, P95 {:.3}ms, P99 {:.3}ms, max {:.3}ms | Avg Interval {:.3}ms",
+            final_stats.stddev_cmd_dispatch_jitter_ms,
+            final_stats.p95_cmd_dispatch_jitter_ms,
+            final_stats.p99_cmd_dispatch_jitter_ms,
+            final_stats.max_cmd_dispatch_jitter_ms,
+            final_stats.avg_cmd_dispatch_interval_ms
+        );
+        info!(
+            "Retransmitting Uplink Jitter: stddev {:.3}ms, P95 {:.3}ms, P99 {:.3}ms, max {:.3}ms | Avg Interval {:.3}ms",
+            final_stats.stddev_retransmit_uplink_jitter_ms,
+            final_stats.p95_retransmit_uplink_jitter_ms,
+            final_stats.p99_retransmit_uplink_jitter_ms,
+            final_stats.max_retransmit_uplink_jitter_ms,
+            final_stats.avg_retransmit_uplink_interval_ms
+        );
+        info!(
+            "Overall Uplink Jitter: stddev {:.3}ms, P95 {:.3}ms, P99 {:.3}ms, max {:.3}ms | Avg Interval {:.3}ms",
+            final_stats.stddev_overall_uplink_jitter_ms,
+            final_stats.p95_overall_uplink_jitter_ms,
+            final_stats.p99_overall_uplink_jitter_ms,
+            final_stats.max_overall_uplink_jitter_ms,
+            final_stats.avg_overall_uplink_interval_ms
         );
         info!(
             "Reception Jitter: avg {:.3}ms, stddev {:.3}ms, P95 {:.3}ms, P99 {:.3}ms, max {:.3}ms",
@@ -955,16 +972,41 @@ impl GroundControlSystem {
             final_stats.p99_reception_jitter_ms,
             final_stats.max_reception_jitter_ms
         );
-        if final_stats.packet_to_uplink_latency_samples == 0 {
-            info!("Packet-To-Uplink Latency: no samples observed in this run");
+        if final_stats.packet_retransmission_latency_samples == 0 {
+            info!("Packet Retransmission Latency: no samples observed in this run");
         } else {
             info!(
-                "Packet-To-Uplink Latency: avg {:.3}ms (P95 {:.3}ms, P99 {:.3}ms, max {:.3}ms) from {} samples",
-                final_stats.avg_packet_to_uplink_latency_ms,
-                final_stats.p95_packet_to_uplink_latency_ms,
-                final_stats.p99_packet_to_uplink_latency_ms,
-                final_stats.max_packet_to_uplink_latency_ms,
-                final_stats.packet_to_uplink_latency_samples
+                "Packet Retransmission Latency: avg {:.3}ms (P95 {:.3}ms, P99 {:.3}ms, max {:.3}ms) from {} samples",
+                final_stats.avg_packet_retransmission_latency_ms,
+                final_stats.p95_packet_retransmission_latency_ms,
+                final_stats.p99_packet_retransmission_latency_ms,
+                final_stats.max_packet_retransmission_latency_ms,
+                final_stats.packet_retransmission_latency_samples
+            );
+            // Overall packet to uplink latency
+            if final_stats.overall_packet_to_uplink_latency_samples == 0 {
+                info!("Overall Packet-to-Uplink Latency: no samples observed in this run");
+            } else {
+                info!(
+                    "Overall Packet-to-Uplink Latency: avg {:.3}ms (P95 {:.3}ms, P99 {:.3}ms, max {:.3}ms) from {} samples",
+                    final_stats.avg_overall_packet_to_uplink_latency_ms,
+                    final_stats.p95_overall_packet_to_uplink_latency_ms,
+                    final_stats.p99_overall_packet_to_uplink_latency_ms,
+                    final_stats.max_overall_packet_to_uplink_latency_ms,
+                    final_stats.overall_packet_to_uplink_latency_samples
+                );
+            }
+        }
+        if final_stats.command_dispatch_latency_samples == 0 {
+            info!("Command Dispatch Latency: no samples observed in this run");
+        } else {
+            info!(
+                "Command Dispatch Latency: avg {:.3}ms (P95 {:.3}ms, P99 {:.3}ms, max {:.3}ms) from {} samples",
+                final_stats.avg_command_dispatch_latency_ms,
+                final_stats.p95_command_dispatch_latency_ms,
+                final_stats.p99_command_dispatch_latency_ms,
+                final_stats.max_command_dispatch_latency_ms,
+                final_stats.command_dispatch_latency_samples
             );
         }
         info!(
