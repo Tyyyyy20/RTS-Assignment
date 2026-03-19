@@ -47,6 +47,9 @@ async fn main() -> Result<()> {
 
     // -------- telemetry buffer before producers ----------
     telemetry::init_priority_buffer(cfg.max_batch * 8); // e.g., 8 batches deep
+    
+    // Uncomment this line ONLY for testing degraded mode (forces buffer to fill >80%)
+    // telemetry::init_priority_buffer(100);
 
     // -------- background services ----------
     // Downlink visibility window simulator (5ms init rule, 30ms prep check)

@@ -1,4 +1,6 @@
+// src/downlink/mod.rs
 use once_cell::sync::OnceCell;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::{self, Duration, Instant};
@@ -10,18 +12,20 @@ pub static DL: OnceCell<Downlink> = OnceCell::new();
 enum LinkState {
     Closed,
     Opening { opened_at: Instant, init_started: bool },
-    Ready { opened_at: Instant, ready_at: Instant, degraded: bool },
+    Ready { opened_at: Instant, ready_at: Instant },
 }
 
 #[derive(Clone)]
 pub struct Downlink {
     inner: Arc<Mutex<LinkState>>,
+    pub is_degraded: Arc<AtomicBool>,
 }
 
 impl Downlink {
     fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(LinkState::Closed)),
+            is_degraded: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -40,10 +44,16 @@ impl Downlink {
         info!("downlink: window closed");
     }
 
+    pub fn degraded(&self) -> bool {
+        self.is_degraded.load(Ordering::SeqCst)
+    }
+
     /// Called by batcher before a send; enforces 5ms init, checks 30ms prep.
     pub async fn pre_send(&self) -> DownlinkEvent {
         let mut state = self.inner.lock().await;
         let now = Instant::now();
+        
+        let currently_degraded = self.degraded();
 
         match *state {
             LinkState::Closed => DownlinkEvent::NotInWindow,
@@ -66,61 +76,47 @@ impl Downlink {
                     *state = LinkState::Ready {
                         opened_at,
                         ready_at,
-                        degraded: false,
                     };
 
-                    let prep_ms =
-                        ready_at.duration_since(opened_at).as_secs_f64() * 1000.0;
+                    // FIX: Measure prep_ms from when the window opened!
+                    let prep_ms = now.duration_since(opened_at).as_secs_f64() * 1000.0;
 
                     if prep_ms > 30.0 {
                         DownlinkEvent::ReadyPrepLate { prep_ms }
+                    } else if currently_degraded {
+                        DownlinkEvent::ReadyDegraded { prep_ms }
                     } else {
-                        DownlinkEvent::Ready
+                        DownlinkEvent::Ready { prep_ms }
                     }
                 }
             }
 
             LinkState::Ready {
                 opened_at,
-                ready_at,
-                degraded,
+                ready_at: _,
             } => {
-                let prep_ms =
-                    ready_at.duration_since(opened_at).as_secs_f64() * 1000.0;
+                // FIX: Measure prep_ms from when the window opened!
+                let prep_ms = now.duration_since(opened_at).as_secs_f64() * 1000.0;
 
                 if prep_ms > 30.0 {
                     DownlinkEvent::ReadyPrepLate { prep_ms }
-                } else if degraded {
-                    DownlinkEvent::ReadyDegraded
+                } else if currently_degraded {
+                    DownlinkEvent::ReadyDegraded { prep_ms }
                 } else {
-                    DownlinkEvent::Ready
+                    DownlinkEvent::Ready { prep_ms }
                 }
             }
         }
     }
 
     pub async fn set_degraded(&self, on: bool) {
-        let mut state = self.inner.lock().await;
+        // Swap the value instantly, regardless of the window state
+        let was_degraded = self.is_degraded.swap(on, Ordering::SeqCst);
 
-        match *state {
-            LinkState::Ready {
-                opened_at,
-                ready_at,
-                ..
-            } => {
-                *state = LinkState::Ready {
-                    opened_at,
-                    ready_at,
-                    degraded: on,
-                };
-
-                if on {
-                    warn!("downlink: DEGRADED mode enabled (buffer > 80%)");
-                } else {
-                    info!("downlink: degraded mode cleared");
-                }
-            }
-            _ => {}
+        if on && !was_degraded {
+            warn!("downlink: DEGRADED mode enabled (buffer > 80%)");
+        } else if !on && was_degraded {
+            info!("downlink: degraded mode cleared");
         }
     }
 }
@@ -129,9 +125,9 @@ impl Downlink {
 pub enum DownlinkEvent {
     NotInWindow,
     MissedInit,
-    Ready,
-    ReadyPrepLate { prep_ms: f64 },
-    ReadyDegraded,
+    Ready { prep_ms: f64 },            // <-- UPDATED
+    ReadyPrepLate { prep_ms: f64 },    // <-- UPDATED
+    ReadyDegraded { prep_ms: f64 },    // <-- UPDATED
 }
 
 /// Simulate visibility windows (e.g., every 5s open for 800ms)
