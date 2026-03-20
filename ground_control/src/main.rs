@@ -911,7 +911,7 @@ impl GroundControlSystem {
     pub async fn shutdown(&self) {
         info!("Initiating Graceful Shutdown Procedure...");
         *self.is_running.lock().await = false;
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
 
         let performance_tracker = self.performance_tracker.lock().await;
         let final_report = performance_tracker.build_performance_report(chrono::Duration::minutes(5));
