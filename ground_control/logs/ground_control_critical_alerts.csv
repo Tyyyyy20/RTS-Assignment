@@ -1,1 +1,6 @@
 ts,event,fault_id,fault_type,severity,description,recovery_mode,response_time_ms,resolution_ms,detected_at,resolved_at,auto_recovered
+2026-03-20T18:28:28.950900200+00:00,detected,TelemetryError_b3743567101a17de,TelemetryError,High,"Critical Condition Detected In Power Sensor 2: 0.00",,256.061,,2026-03-20T18:28:28.542397300+00:00,,false
+2026-03-20T18:32:59.302473400+00:00,detected,TelemetryError_b3743567101a17de,TelemetryError,High,"Critical Condition Detected In Power Sensor 2: 0.00",,328.196,,2026-03-20T18:32:58.840713300+00:00,,false
+2026-03-20T18:33:24.440776100+00:00,detected,TelemetryError_b3743567101a17de,TelemetryError,High,"Critical Condition Detected In Power Sensor 2: 0.00",,142.572,,2026-03-20T18:33:24.108135100+00:00,,false
+2026-03-20T18:35:04.180940100+00:00,detected,TelemetryError_b3743567101a17de,TelemetryError,High,"Critical Condition Detected In Power Sensor 2: 0.00",,151.097,,2026-03-20T18:35:03.850725600+00:00,,false
+2026-03-20T18:38:09.585355600+00:00,detected,TelemetryError_b3743567101a17de,TelemetryError,High,"Critical Condition Detected In Power Sensor 2: 0.00",,110.346,,2026-03-20T18:38:09.188020700+00:00,,false

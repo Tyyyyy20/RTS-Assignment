@@ -1,3 +1,4 @@
+const SAFETY_INTERLOCK_LOG_PATH: &str = "logs/ground_control_safety_interlocks.csv";
 // fault_management.rs
 //
 // Presentation map:
@@ -137,6 +138,9 @@ pub struct FaultManager {
     /// Interlock IDs released during the last reconcile pass.
     /// Drained by the command scheduler to requeue blocked commands.
     recently_released_interlocks: Vec<String>,
+
+    /// All activation latencies for interlocks (ms)
+    interlock_activation_latencies_ms: Vec<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -163,6 +167,69 @@ pub enum RecoveryOutcome {
 }
 
 impl FaultManager {
+            /// Returns the number of interlock activation latency samples tracked.
+            pub fn interlock_activation_latency_sample_count(&self) -> usize {
+                self.interlock_activation_latencies_ms.len()
+            }
+        /// Initialize safety interlock CSV for activation/release evidence.
+        fn initialize_safety_interlock_csv() {
+            use std::fs::{self, OpenOptions};
+            use std::io::Write;
+            let _ = fs::create_dir_all("logs");
+            let output_path = SAFETY_INTERLOCK_LOG_PATH;
+            if !std::path::Path::new(output_path).exists() {
+                match OpenOptions::new().create(true).append(true).open(output_path) {
+                    Ok(mut csv_file) => {
+                        let _ = writeln!(csv_file,
+                            "ts,event_type,interlock_id,activation_reason,fault_id,fault_type,activated_at,released_at,activation_latency_ms,total_active_ms");
+                    }
+                    Err(write_error) => {
+                        warn!("Unable To Initialize ground_control_safety_interlocks.csv: {}", write_error);
+                    }
+                }
+            }
+        }
+
+        /// Append a row to the safety interlock CSV for activation or release.
+        fn append_safety_interlock_csv(
+            event_type: &str,
+            interlock: &SafetyInterlock,
+            released_at: Option<DateTime<Utc>>,
+            total_active_ms: Option<f64>,
+        ) {
+            use std::fs::{self, OpenOptions};
+            use std::io::Write;
+            let _ = fs::create_dir_all("logs");
+            let output_path = SAFETY_INTERLOCK_LOG_PATH;
+            let should_write_header = !std::path::Path::new(output_path).exists();
+            match OpenOptions::new().create(true).append(true).open(output_path) {
+                Ok(mut csv_file) => {
+                    if should_write_header {
+                        let _ = writeln!(csv_file,
+                            "ts,event_type,interlock_id,activation_reason,fault_id,fault_type,activated_at,released_at,activation_latency_ms,total_active_ms");
+                    }
+                    let ts = Utc::now().to_rfc3339();
+                    let released_at_str = released_at.map(|dt| dt.to_rfc3339()).unwrap_or_else(|| "".to_string());
+                    let total_active_ms_val = total_active_ms.map(|v| format!("{:.3}", v)).unwrap_or_else(|| "".to_string());
+                    let _ = writeln!(csv_file,
+                        "{},{},{},{},{},{},{},{},{:.3},{}",
+                        ts,
+                        event_type,
+                        interlock.interlock_id,
+                        interlock.activation_reason.replace(',', ";"),
+                        interlock.fault_id.clone().unwrap_or_default(),
+                        interlock.fault_types.iter().map(|f| format!("{:?}", f)).collect::<Vec<_>>().join(";"),
+                        interlock.activated_at.to_rfc3339(),
+                        released_at_str,
+                        interlock.activation_latency_ms,
+                        total_active_ms_val
+                    );
+                }
+                Err(write_error) => {
+                    warn!("Unable To Append ground_control_safety_interlocks.csv: {}", write_error);
+                }
+            }
+        }
     pub fn new() -> Self {
         info!("Starting Fault Manager Subsystem");
 
@@ -172,6 +239,8 @@ impl FaultManager {
         Self::initialize_fault_recovery_csv();
         // Ensure critical-alert audit CSV exists from startup (same columns, filtered mirror).
         Self::initialize_csv(CRITICAL_ALERT_LOG_PATH);
+        // Ensure safety interlock audit CSV exists from startup.
+        Self::initialize_safety_interlock_csv();
 
         Self {
             active_faults: HashMap::new(),
@@ -205,6 +274,7 @@ impl FaultManager {
             loc_events: 0,
             loc_total_duration_ms: 0.0,
             recently_released_interlocks: Vec::new(),
+            interlock_activation_latencies_ms: Vec::with_capacity(200),
         }
     }
 
@@ -264,7 +334,26 @@ impl FaultManager {
             self.total_faults_detected += 1;
         }
 
+        // Always log every fault occurrence in the fault recovery CSV
+        Self::append_fault_recovery_csv_entry(
+            FAULT_RECOVERY_LOG_PATH,
+            "detected",
+            &fault_id,
+            &fault_event.fault_type,
+            &fault_event.severity,
+            &fault_event.description,
+            None,
+            Some(fault_event.timestamp),
+            None,
+            false,
+            None,
+            None,
+        );
+
         match fault_event.fault_type {
+            FaultType::TelemetryError | FaultType::SensorFailure => {
+                response = self.handle_telemetry_fault(fault_event.clone(), response, &fault_id).await?;
+            }
             FaultType::NetworkError | FaultType::CommunicationLoss => {
                 self.consecutive_network_failures += 1;
                 response = self.handle_network_fault(fault_event.clone(), response, &fault_id).await?;
@@ -340,40 +429,7 @@ impl FaultManager {
         }
 
         // New faults always get a detection row in the main CSV.
-        // If response time exceeded the threshold, mirror the same row to the
-        // critical alerts CSV — no special labels, just a filtered copy.
-        if !fault_already_active {
-            Self::append_fault_recovery_csv_entry(
-                FAULT_RECOVERY_LOG_PATH,
-                "detected",
-                &fault_id,
-                &fault_event.fault_type,
-                &fault_event.severity,
-                &fault_event.description,
-                None,
-                Some(fault_event.timestamp),
-                None,
-                false,
-                Some(response_time),
-                None,
-            );
-            if is_critical_ground_alert {
-                Self::append_fault_recovery_csv_entry(
-                    CRITICAL_ALERT_LOG_PATH,
-                    "detected",
-                    &fault_id,
-                    &fault_event.fault_type,
-                    &fault_event.severity,
-                    &fault_event.description,
-                    None,
-                    Some(fault_event.timestamp),
-                    None,
-                    false,
-                    Some(response_time),
-                    None,
-                );
-            }
-        }
+        // (Redundant logging removed: all faults are now always logged above.)
 
         self.update_response_time_stats(response_time);
 
@@ -388,6 +444,45 @@ impl FaultManager {
     /// Returns whether the GCS is currently in an active loss-of-contact episode.
     pub fn has_active_loss_of_contact(&self) -> bool {
         self.loc_active_since.is_some()
+    }
+    async fn handle_telemetry_fault(
+        &mut self,
+        fault_event: FaultEvent,
+        mut response: FaultResponse,
+        fault_id: &str
+    ) -> Result<FaultResponse> {
+        match fault_event.severity {
+            Severity::Critical | Severity::High => {
+                warn!("TELEMETRY FAULT - Sensor Data Unreliable, Blocking State-Dependent Commands");
+                let interlock_id = "telemetry_data_unreliable".to_string();
+                self.activate_safety_interlock(
+                    interlock_id.clone(),
+                    vec![FaultType::TelemetryError, FaultType::SensorFailure],
+                    vec!["payload_activation".to_string(), "precise_maneuver".to_string(),
+                        "cpu_intensive_tasks".to_string()],
+                    vec!["all_systems".to_string()],
+                    format!("Telemetry Unreliable - Commands Requiring Sensor State Blocked: {}",
+                        fault_event.description),
+                    Some(fault_id.to_string()),
+                    Some(fault_event.timestamp),
+                );
+                response.safety_interlocks_triggered.push(interlock_id);
+                response.commands_blocked.extend(vec![
+                    "payload_activation".to_string(),
+                    "precise_maneuver".to_string(),
+                    "cpu_intensive_tasks".to_string(),
+                ]);
+                response.auto_recovery_attempted = true;
+                if let Some(af) = self.active_faults.get_mut(fault_id) {
+                    af.auto_recovery_attempted = true;
+                }
+                self.auto_recovery_attempts += 1;
+            }
+            _ => {
+                warn!("Telemetry Anomaly Detected - Monitoring Sensor Health");
+            }
+        }
+        Ok(response)
     }
 
     // Declares/maintains a loss-of-contact episode after threshold failures (B1.4).
@@ -733,8 +828,17 @@ impl FaultManager {
             released_at: None,
         };
 
-        self.safety_interlocks.insert(interlock_id, interlock);
+        self.safety_interlocks.insert(interlock_id.clone(), interlock.clone());
         self.total_interlocks_activated += 1;
+
+        // Track all activation latencies
+        self.interlock_activation_latencies_ms.push(activation_latency_ms);
+        if self.interlock_activation_latencies_ms.len() > 1000 {
+            self.interlock_activation_latencies_ms.remove(0);
+        }
+
+        // Log activation event
+        Self::append_safety_interlock_csv("activated", &interlock, None, None);
     }
 
     // Evaluates interlock blocking and records latency chain for B3.3 evidence.
@@ -1047,11 +1151,6 @@ impl FaultManager {
                 }
             }
 
-            let was_critical_ground_alert = active_fault
-                .response_time_ms
-                .map(|v| v > self.critical_response_time_ms)
-                .unwrap_or(false);
-
             // Write resolution row to main CSV. Mirror to critical alerts CSV
             // if this fault originally triggered a critical ground alert.
             Self::append_fault_recovery_csv_entry(
@@ -1068,22 +1167,6 @@ impl FaultManager {
                 None,
                 Some(resolution_ms),
             );
-            if was_critical_ground_alert {
-                Self::append_fault_recovery_csv_entry(
-                    CRITICAL_ALERT_LOG_PATH,
-                    "resolved",
-                    &active_fault.fault_id,
-                    &active_fault.fault_event.fault_type,
-                    &active_fault.fault_event.severity,
-                    &active_fault.fault_event.description,
-                    recovery_mode_label.as_deref(),
-                    Some(active_fault.detected_at),
-                    Some(now),
-                    auto_recovered,
-                    None,
-                    Some(resolution_ms),
-                );
-            }
 
             info!(
                 "Fault Resolved: {} | Outcome={} | ResolutionTime={:.3}ms",
@@ -1124,6 +1207,9 @@ impl FaultManager {
                 self.interlock_total_active_ms += dur_ms;
                 self.interlock_releases += 1;
                 self.recently_released_interlocks.push(interlock_id.clone());
+
+                // Log release event
+                Self::append_safety_interlock_csv("released", &interlock, Some(now), Some(dur_ms));
 
                 info!(
                     "Deactivated Interlock {} (Active {:.3} ms)", interlock_id, dur_ms
@@ -1281,11 +1367,20 @@ impl FaultManager {
             total_time as f64 / self.fault_history.len() as f64
         } else { 0.0 };
 
-        let (interlock_avg_activation_latency_ms, interlock_max_activation_latency_ms) =
-            if self.safety_interlocks.is_empty() { (0.0, 0.0) } else {
-                let sum: f64 = self.safety_interlocks.values().map(|i| i.activation_latency_ms).sum();
-                let max: f64 = self.safety_interlocks.values().map(|i| i.activation_latency_ms).fold(0.0, f64::max);
-                (sum / self.safety_interlocks.len() as f64, max)
+
+        // Compute activation latency stats from all activations
+        let (interlock_avg_activation_latency_ms, interlock_max_activation_latency_ms, interlock_p95_activation_latency_ms, interlock_p99_activation_latency_ms) =
+            if self.interlock_activation_latencies_ms.is_empty() {
+                (0.0, 0.0, 0.0, 0.0)
+            } else {
+                let mut latencies = self.interlock_activation_latencies_ms.clone();
+                latencies.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let len = latencies.len();
+                let avg = latencies.iter().sum::<f64>() / len as f64;
+                let max = *latencies.last().unwrap();
+                let p95 = latencies[((len as f64 * 0.95).ceil() as usize).saturating_sub(1)];
+                let p99 = latencies[((len as f64 * 0.99).ceil() as usize).saturating_sub(1)];
+                (avg, max, p95, p99)
             };
 
         let recent_block_latencies: Vec<f64> = self.command_block_events.iter()
@@ -1315,6 +1410,8 @@ impl FaultManager {
             last_successful_communication: self.last_successful_communication,
             interlock_avg_activation_latency_ms,
             interlock_max_activation_latency_ms,
+            interlock_p95_activation_latency_ms,
+            interlock_p99_activation_latency_ms,
             recent_latency_violations: latency_violations,
             total_commands_blocked: self.command_block_events.len() as u64,
 
@@ -1355,6 +1452,8 @@ pub struct FaultManagerStats {
     pub last_successful_communication: Option<DateTime<Utc>>,
     pub interlock_avg_activation_latency_ms: f64,
     pub interlock_max_activation_latency_ms: f64,
+    pub interlock_p95_activation_latency_ms: f64,
+    pub interlock_p99_activation_latency_ms: f64,
     pub recent_latency_violations: u32,
     pub total_commands_blocked: u64,
 

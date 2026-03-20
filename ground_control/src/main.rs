@@ -924,7 +924,7 @@ impl GroundControlSystem {
         let runtime_mins = runtime_secs / 60;
         let runtime_rem_secs = runtime_secs % 60;
 
-        info!("=== FINAL GROUND CONTROL SUMMARY ===");
+        info!("========== FINAL GROUND CONTROL SUMMARY ==========");
         info!("Total Runtime: {}m {}s", runtime_mins, runtime_rem_secs);
         info!("Telemetry Packets Processed: {}", final_stats.total_packets_processed);
         info!("Average Processing Time: {:.3}ms (P95 {:.3}ms, P99 {:.3}ms)", final_stats.avg_processing_time_ms, final_stats.p95_processing_time_ms, final_stats.p99_processing_time_ms);
@@ -972,31 +972,6 @@ impl GroundControlSystem {
             final_stats.p99_reception_jitter_ms,
             final_stats.max_reception_jitter_ms
         );
-        if final_stats.packet_retransmission_latency_samples == 0 {
-            info!("Packet Retransmission Latency: no samples observed in this run");
-        } else {
-            info!(
-                "Packet Retransmission Latency: avg {:.3}ms (P95 {:.3}ms, P99 {:.3}ms, max {:.3}ms) from {} samples",
-                final_stats.avg_packet_retransmission_latency_ms,
-                final_stats.p95_packet_retransmission_latency_ms,
-                final_stats.p99_packet_retransmission_latency_ms,
-                final_stats.max_packet_retransmission_latency_ms,
-                final_stats.packet_retransmission_latency_samples
-            );
-            // Overall packet to uplink latency
-            if final_stats.overall_packet_to_uplink_latency_samples == 0 {
-                info!("Overall Packet-to-Uplink Latency: no samples observed in this run");
-            } else {
-                info!(
-                    "Overall Packet-to-Uplink Latency: avg {:.3}ms (P95 {:.3}ms, P99 {:.3}ms, max {:.3}ms) from {} samples",
-                    final_stats.avg_overall_packet_to_uplink_latency_ms,
-                    final_stats.p95_overall_packet_to_uplink_latency_ms,
-                    final_stats.p99_overall_packet_to_uplink_latency_ms,
-                    final_stats.max_overall_packet_to_uplink_latency_ms,
-                    final_stats.overall_packet_to_uplink_latency_samples
-                );
-            }
-        }
         if final_stats.command_dispatch_latency_samples == 0 {
             info!("Command Dispatch Latency: no samples observed in this run");
         } else {
@@ -1009,27 +984,32 @@ impl GroundControlSystem {
                 final_stats.command_dispatch_latency_samples
             );
         }
-        info!(
-            "Telemetry Backlog Queue: len avg {:.1} (P95 {:.1}, max {}) | age avg {:.3}ms (P95 {:.3}ms, max {:.3}ms) | warn {} crit {}",
-            final_stats.backlog_avg_len,
-            final_stats.backlog_p95_len,
-            final_stats.backlog_max_len,
-            final_stats.backlog_avg_age_ms,
-            final_stats.backlog_p95_age_ms,
-            final_stats.backlog_max_age_ms,
-            final_stats.backlog_warn_events,
-            final_stats.backlog_critical_events
-        );
-        info!(
-            "Faults Handled: {} | Active Faults: {} | Active Critical Faults: {}",
-            fault_stats.total_faults_detected,
-            fault_stats.active_faults_count,
-            fault_stats.active_critical_faults
-        );
-        info!(
-            "Critical Ground Alerts (>100ms Fault Response): {}",
-            fault_stats.response_time_critical_alerts
-        );
+        if final_stats.packet_retransmission_latency_samples == 0 {
+            info!("Packet Retransmission Latency: no samples observed in this run");
+        } else {
+            info!(
+                "Packet Retransmission Latency: avg {:.3}ms (P95 {:.3}ms, P99 {:.3}ms, max {:.3}ms) from {} samples",
+                final_stats.avg_packet_retransmission_latency_ms,
+                final_stats.p95_packet_retransmission_latency_ms,
+                final_stats.p99_packet_retransmission_latency_ms,
+                final_stats.max_packet_retransmission_latency_ms,
+                final_stats.packet_retransmission_latency_samples
+            );
+            
+        }
+        // Overall packet to uplink latency
+        if final_stats.overall_packet_to_uplink_latency_samples == 0 {
+            info!("Overall Packet-to-Uplink Latency: no samples observed in this run");
+        } else {
+            info!(
+                "Overall Packet-to-Uplink Latency: avg {:.3}ms (P95 {:.3}ms, P99 {:.3}ms, max {:.3}ms) from {} samples",
+                final_stats.avg_overall_packet_to_uplink_latency_ms,
+                final_stats.p95_overall_packet_to_uplink_latency_ms,
+                final_stats.p99_overall_packet_to_uplink_latency_ms,
+                final_stats.max_overall_packet_to_uplink_latency_ms,
+                final_stats.overall_packet_to_uplink_latency_samples
+            );
+        }
         if final_stats.command_response_rtt_samples == 0 {
             info!("Command-To-Response Latency: no samples observed in this run");
         } else {
@@ -1050,11 +1030,44 @@ impl GroundControlSystem {
             final_stats.max_task_drift_ms
         );
         info!(
+            "Telemetry Backlog Queue: len avg {:.1} (P95 {:.1}, max {}) | age avg {:.3}ms (P95 {:.3}ms, max {:.3}ms) | warn {} crit {}",
+            final_stats.backlog_avg_len,
+            final_stats.backlog_p95_len,
+            final_stats.backlog_max_len,
+            final_stats.backlog_avg_age_ms,
+            final_stats.backlog_p95_age_ms,
+            final_stats.backlog_max_age_ms,
+            final_stats.backlog_warn_events,
+            final_stats.backlog_critical_events
+        );
+        info!(
+            "Faults Scenarios Handled: {} | Active Faults: {} | Active Critical Faults: {}",
+            fault_stats.total_faults_detected,
+            fault_stats.active_faults_count,
+            fault_stats.active_critical_faults
+        );
+        info!(
+            "Critical Ground Alerts (>100ms Fault Response): {}",
+            fault_stats.response_time_critical_alerts
+        );
+
+        info!(
             "Fault Recovery: AvgResponse {:.3}ms | AvgResolution {:.3}ms | MTTR {:.3}ms | MTBF {:.3}ms",
             fault_stats.avg_fault_response_time_ms,
             fault_stats.avg_fault_resolution_time_ms,
             fault_stats.mttr_avg_ms,
             fault_stats.mtbf_avg_ms
+        );
+
+        let fault_manager = self.fault_manager.lock().await;
+        let interlock_latency_samples = fault_manager.interlock_activation_latency_sample_count();
+        info!(
+            "Interlock Activation Latency: avg {:.3}ms (P95 {:.3}ms, P99 {:.3}ms, max {:.3}ms) from {} activations",
+            fault_stats.interlock_avg_activation_latency_ms,
+            fault_stats.interlock_p95_activation_latency_ms,
+            fault_stats.interlock_p99_activation_latency_ms,
+            fault_stats.interlock_max_activation_latency_ms,
+            interlock_latency_samples
         );
         info!(
             "Missed Deadlines: {} of {} urgent commands",
