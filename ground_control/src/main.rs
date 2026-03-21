@@ -815,25 +815,25 @@ impl GroundControlSystem {
                             //     }
                             // }
  
-                            let _ = performance_tx.send(PerformanceEvent {
-                                timestamp: issued_at,
-                                event_type: if urgent {
-                                    EventType::UrgentCommandDispatched
-                                } else {
-                                    EventType::CommandDispatched
-                                },
-                                duration_ms: 0.0,
-                                metadata: {
-                                    let mut m = std::collections::HashMap::new();
-                                    m.insert("command_id".into(), c.command_id.clone());
-                                    m.insert("command_type".into(), format_debug_enum(&c.command_type));
-                                    m.insert("priority".into(), (c.priority as u8).to_string());
-                                    m.insert("target_system".into(), format_debug_enum(&c.target_system));
-                                    m.insert("is_urgent".into(), urgent.to_string());
-                                    m.insert("tick".into(), tick.to_string());
-                                    m
-                                },
-                            }).await;
+                            // let _ = performance_tx.send(PerformanceEvent {
+                            //     timestamp: issued_at,
+                            //     event_type: if urgent {
+                            //         EventType::UrgentCommandDispatched
+                            //     } else {
+                            //         EventType::CommandDispatched
+                            //     },
+                            //     duration_ms: 0.0,
+                            //     metadata: {
+                            //         let mut m = std::collections::HashMap::new();
+                            //         m.insert("command_id".into(), c.command_id.clone());
+                            //         m.insert("command_type".into(), format_debug_enum(&c.command_type));
+                            //         m.insert("priority".into(), (c.priority as u8).to_string());
+                            //         m.insert("target_system".into(), format_debug_enum(&c.target_system));
+                            //         m.insert("is_urgent".into(), urgent.to_string());
+                            //         m.insert("tick".into(), tick.to_string());
+                            //         m
+                            //     },
+                            // }).await;
                         }
                     }
  

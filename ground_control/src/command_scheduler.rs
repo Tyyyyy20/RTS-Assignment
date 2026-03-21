@@ -513,23 +513,25 @@ impl CommandScheduler {
                         scheduled.command.command_id, precision_ms, sr.send_time_ms, combined_latency_ms
                     );
 
-                    // Emit combined latency as CommandDispatched event
+                    // Emit CommandDispatched event ONLY after successful dispatch and CSV write
                     if let Some(tx) = perf_tx {
-                        let _ = tx.send(PerformanceEvent {
-                            timestamp: dispatch_now,
-                            event_type: EventType::CommandDispatched,
-                            duration_ms: combined_latency_ms,
-                            metadata: {
-                                let mut m = HashMap::new();
-                                m.insert("command_id".into(), scheduled.command.command_id.clone());
-                                m.insert("scheduled_at".into(), scheduled.scheduled_at.to_rfc3339());
-                                m.insert("dispatched_at".into(), dispatch_now.to_rfc3339());
-                                m.insert("precision_ms".into(), format!("{:.3}", precision_ms));
-                                m.insert("send_time_ms".into(), format!("{:.3}", sr.send_time_ms));
-                                m.insert("total_latency_ms".into(), format!("{:.3}", combined_latency_ms));
-                                m
-                            },
-                        }).await;
+                        if network_met && deadline_met && sr.success{
+                            let _ = tx.send(PerformanceEvent {
+                                timestamp: dispatch_now,
+                                event_type: EventType::CommandDispatched,
+                                duration_ms: combined_latency_ms,
+                                metadata: {
+                                    let mut m = HashMap::new();
+                                    m.insert("command_id".into(), scheduled.command.command_id.clone());
+                                    m.insert("scheduled_at".into(), scheduled.scheduled_at.to_rfc3339());
+                                    m.insert("dispatched_at".into(), dispatch_now.to_rfc3339());
+                                    m.insert("precision_ms".into(), format!("{:.3}", precision_ms));
+                                    m.insert("send_time_ms".into(), format!("{:.3}", sr.send_time_ms));
+                                    m.insert("total_latency_ms".into(), format!("{:.3}", combined_latency_ms));
+                                    m
+                                },
+                            }).await;
+                        }
                     }
                 }
                 Err(e) => {

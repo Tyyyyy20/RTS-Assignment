@@ -1220,7 +1220,7 @@ impl PerformanceTracker {
 
          if self.network_metrics.network_deadline_violations_2ms > 0 {
             issues.push(format!(
-                "Network ≤2ms violations: {}",
+                "Network >2ms violations: {}",
                 self.network_metrics.network_deadline_violations_2ms
             ));
         }
