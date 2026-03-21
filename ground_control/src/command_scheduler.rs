@@ -9,7 +9,6 @@
 
 use std::collections::{VecDeque, HashMap};
 use chrono::{DateTime, Utc};
-use anyhow::{Result, anyhow};
 use tracing::{info, warn, error};
 use tokio::sync::mpsc;
 
@@ -706,44 +705,44 @@ impl CommandScheduler {
         // This could validate command parameters, check system states, etc.
     }
 
-    pub fn schedule_command(&mut self, command: Command) -> Result<String> {
-        // Validate command deadline
-        if let Some(deadline) = command.deadline {
-            if deadline <= Utc::now() {
-                return Err(anyhow!("Command deadline is in the past: {}", deadline));
-            }
-        }
+    // pub fn schedule_command(&mut self, command: Command) -> Result<String> {
+    //     // Validate command deadline
+    //     if let Some(deadline) = command.deadline {
+    //         if deadline <= Utc::now() {
+    //             return Err(anyhow!("Command deadline is in the past: {}", deadline));
+    //         }
+    //     }
 
-        // Validate command ID is not empty
-        if command.command_id.trim().is_empty() {
-            return Err(anyhow!("Command ID cannot be empty"));
-        }
+    //     // Validate command ID is not empty
+    //     if command.command_id.trim().is_empty() {
+    //         return Err(anyhow!("Command ID cannot be empty"));
+    //     }
 
-        // Check for duplicate command IDs in both queues
-        if self.queue.iter().any(|s| s.command.command_id == command.command_id)
-            || self.interlock_retry_queue.iter().any(|e| e.scheduled.command.command_id == command.command_id)
-        {
-            return Err(anyhow!("Command with ID {} is already scheduled", command.command_id));
-        }
+    //     // Check for duplicate command IDs in both queues
+    //     if self.queue.iter().any(|s| s.command.command_id == command.command_id)
+    //         || self.interlock_retry_queue.iter().any(|e| e.scheduled.command.command_id == command.command_id)
+    //     {
+    //         return Err(anyhow!("Command with ID {} is already scheduled", command.command_id));
+    //     }
 
-        let scheduled_command_id = command.command_id.clone();
-        let scheduled = Scheduled {
-            command,
-            _enqueued_at: Utc::now(),
-            retry_count: 0,
-        };
+    //     let scheduled_command_id = command.command_id.clone();
+    //     let scheduled = Scheduled {
+    //         command,
+    //         _enqueued_at: Utc::now(),
+    //         retry_count: 0,
+    //     };
 
-        // Insert high priority commands at the front
-        let is_urgent = (scheduled.command.priority as u8) <= 1;
-        if is_urgent {
-            self.queue.push_front(scheduled);
-        } else {
-            self.queue.push_back(scheduled);
-        }
+    //     // Insert high priority commands at the front
+    //     let is_urgent = (scheduled.command.priority as u8) <= 1;
+    //     if is_urgent {
+    //         self.queue.push_front(scheduled);
+    //     } else {
+    //         self.queue.push_back(scheduled);
+    //     }
 
-        info!("Command {} Scheduled (Urgent: {})", scheduled_command_id, is_urgent);
-        Ok(scheduled_command_id)
-    }
+    //     info!("Command {} Scheduled (Urgent: {})", scheduled_command_id, is_urgent);
+    //     Ok(scheduled_command_id)
+    // }
 }
 
 // // src/command_scheduler.rs

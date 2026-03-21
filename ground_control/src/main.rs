@@ -890,13 +890,13 @@ impl GroundControlSystem {
         Ok(())
     }
 
-    pub async fn schedule_emergency_deadline_test(&self) -> Result<String> {
-        let mut scheduler = self.command_scheduler.lock().await;
-        let emergency_command = shared_protocol::Command::thermal_emergency_response(1, 95.0);
-        let scheduled_command_id = scheduler.schedule_command(emergency_command)?;
-        info!("Emergency Command Scheduled For Deadline Validation: {scheduled_command_id}");
-        Ok(scheduled_command_id)
-    }
+    // pub async fn schedule_emergency_deadline_test(&self) -> Result<String> {
+    //     let mut scheduler = self.command_scheduler.lock().await;
+    //     let emergency_command = shared_protocol::Command::thermal_emergency_response(1, 95.0);
+    //     let scheduled_command_id = scheduler.schedule_command(emergency_command)?;
+    //     info!("Emergency Command Scheduled For Deadline Validation: {scheduled_command_id}");
+    //     Ok(scheduled_command_id)
+    // }
 
     pub async fn collect_command_scheduler_metrics(&self) -> (EnhancedCommandSchedulerStats, UnifiedDeadlineReport) {
         let scheduler = self.command_scheduler.lock().await;
@@ -1186,17 +1186,17 @@ async fn main() -> Result<()> {
     info!("Ground Control Station Operational - Monitoring Satellite Systems");
     // Demo helper for S2 command->response latency evidence.
     // Periodically sends an emergency test command to keep RTT samples flowing.
-    let gcs_command_tester = Arc::clone(&gcs_arc);
-    tokio::spawn(async move {
-        // Fire one test command every 10 seconds.
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
-        loop {
-            interval.tick().await;
-            if let Err(e) = gcs_command_tester.schedule_emergency_deadline_test().await {
-                tracing::error!("Failed to schedule test command: {}", e);
-            }
-        }
-    });
+    // let gcs_command_tester = Arc::clone(&gcs_arc);
+    // tokio::spawn(async move {
+    //     // Fire one test command every 10 seconds.
+    //     let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+    //     loop {
+    //         interval.tick().await;
+    //         if let Err(e) = gcs_command_tester.schedule_emergency_deadline_test().await {
+    //             tracing::error!("Failed to schedule test command: {}", e);
+    //         }
+    //     }
+    // });
 
     gcs_arc.run().await
 }
