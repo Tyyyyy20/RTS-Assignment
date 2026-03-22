@@ -279,6 +279,17 @@ impl GroundControlSystem {
                                     fm.increment_consecutive_failures();
                                     (fm.has_loss_of_contact_condition(), fm.has_active_loss_of_contact())
                                 };
+                                // Emit a performance event for network timeout
+                                let _ = performance_tx.send(PerformanceEvent {
+                                    timestamp: Utc::now(),
+                                    event_type: EventType::NetworkTimeout,
+                                    duration_ms: 0.0,
+                                    metadata: {
+                                        let mut m = std::collections::HashMap::new();
+                                        m.insert("reason".into(), "receive_timeout".into());
+                                        m
+                                    },
+                                }).await;
                                 if loss_detected && !already_active {
                                     warn!("Loss Of Contact Confirmed");
                                     // Record as a fault, but do NOT trigger safety interlock
