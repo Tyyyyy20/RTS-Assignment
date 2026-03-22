@@ -1,2 +1,0 @@
-ts,event,fault_id,fault_type,severity,description,recovery_mode,response_time_ms,resolution_ms,detected_at,resolved_at,auto_recovered
-2026-03-18T16:33:03.983750900+00:00,detected,NetworkError_4bd6d7f5f2fd1f1c,NetworkError,Medium,"Network Receive Issue Detected: Failed to receive packet",,0.174,,2026-03-18T16:33:03.982519600+00:00,,false
