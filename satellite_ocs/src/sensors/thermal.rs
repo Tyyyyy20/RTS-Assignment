@@ -77,6 +77,7 @@ pub fn spawn() {
             }
 
             let temp_c = 60.0 + ((seq % 40) as f64 * 0.2);
+            // let temp_c = 95.0; // Force an emergency
             let mut r: SensorReading = sensor.create_reading(temp_c, seq);
 
             let actual_ms = start.duration_since(last_start).as_secs_f64() * 1000.0;
