@@ -1248,6 +1248,23 @@ impl GroundControlSystem {
             fault_stats.active_faults_count,
             fault_stats.active_critical_faults
         );
+        // Print all active faults in detail (after locking fault_manager)
+        let fault_manager = self.fault_manager.lock().await;
+        if !fault_manager.active_faults.is_empty() {
+            info!("Active Faults Detail:");
+            for af in fault_manager.active_faults.values() {
+                info!(
+                    "  - [{}] {:?} | Severity: {:?} | Detected: {} | {}",
+                    af.fault_id,
+                    af.fault_event.fault_type,
+                    af.fault_event.severity,
+                    af.detected_at,
+                    af.fault_event.description
+                );
+            }
+        } else {
+            info!("No active faults at shutdown.");
+        }
         info!(
             "Critical Ground Alerts (>100ms Fault Response): {}",
             fault_stats.response_time_critical_alerts

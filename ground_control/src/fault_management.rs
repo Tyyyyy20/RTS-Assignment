@@ -61,18 +61,18 @@ pub struct FaultResponse {
 
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
-struct ActiveFault {
-    fault_event: FaultEvent,
-    fault_id: String,
-    detected_at: DateTime<Utc>,
-    last_occurrence: DateTime<Utc>,
-    occurrence_count: u32,
-    response_time_ms: Option<f64>,
-    is_resolved: bool,
-    resolution_time: Option<DateTime<Utc>>,
-    blocked_commands: Vec<String>,
-    auto_recovery_attempted: bool,
-    recovery_mode: Option<RecoveryMode>,
+ pub struct ActiveFault {
+    pub fault_event: FaultEvent,
+    pub fault_id: String,
+    pub detected_at: DateTime<Utc>,
+    pub last_occurrence: DateTime<Utc>,
+    pub occurrence_count: u32,
+    pub response_time_ms: Option<f64>,
+    pub is_resolved: bool,
+    pub resolution_time: Option<DateTime<Utc>>,
+    pub blocked_commands: Vec<String>,
+    pub auto_recovery_attempted: bool,
+    pub recovery_mode: Option<RecoveryMode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,7 +102,7 @@ struct SafetyInterlock {
 
 #[derive(Debug)]
 pub struct FaultManager {
-    active_faults: HashMap<String, ActiveFault>,
+    pub active_faults: HashMap<String, ActiveFault>,
     safety_interlocks: HashMap<String, SafetyInterlock>,
     fault_history: Vec<ActiveFault>,
     consecutive_network_failures: u32,
