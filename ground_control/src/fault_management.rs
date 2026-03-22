@@ -500,8 +500,7 @@ impl FaultManager {
     ) -> Result<FaultResponse> {
         if self.consecutive_network_failures >= self.loss_of_contact_threshold {
             if self.loc_active_since.is_none() {
-                error!("LOSS OF CONTACT DETECTED - {} Consecutive Failures",
-                    self.consecutive_network_failures);
+                error!("LOSS OF CONTACT DETECTED - Consecutive Failures");
 
                 let interlock_id = "emergency_comm_loss".to_string();
                 self.activate_safety_interlock(
@@ -1183,7 +1182,7 @@ impl FaultManager {
     pub fn record_successful_communication(&mut self) {
         let prev = self.consecutive_network_failures;
         if prev > 0 {
-            info!("Communications Restored After {} Consecutive Failures", prev);
+            info!("Communications Restored After Consecutive Failures");
             self.consecutive_network_failures = 0;
         }
         self.last_successful_communication = Some(Utc::now());

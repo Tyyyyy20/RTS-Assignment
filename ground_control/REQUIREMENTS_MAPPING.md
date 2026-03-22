@@ -1,4 +1,3 @@
-
 # Ground Control Requirements Mapping (2026-03-22)
 
 This file maps each Student B and Shared requirement from assignment_text.txt to the current codebase. Status and evidence are up-to-date as of the latest system changes.
@@ -65,4 +64,4 @@ All Student B and Shared requirement IDs are explicitly listed in source comment
 | S3 | Yes | `src/main.rs` (Task 1/Task 7 map), `src/network_manager.rs`, `src/telemetry_processor.rs`, `src/performance_tracker.rs` |
 | S4 | Yes | `src/main.rs` (Task 2/Task 4 map), `src/telemetry_processor.rs`, `src/fault_management.rs`, `src/performance_tracker.rs` |
 | S5 | Yes | `src/main.rs` (Task 4/Task 7 map), `src/command_scheduler.rs`, `src/fault_management.rs` |
-| S6 | Yes | `src/main.rs` (top map + Task 5), `src/performance_tracker.rs`, `src/system_monitor.rs` |
+| S6 | Yes | `src/main.rs` (top map + Task 5), `src/performance_tracker.rs`, `src/system_monitor.rs` 

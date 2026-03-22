@@ -281,6 +281,14 @@ impl GroundControlSystem {
                                 };
                                 if loss_detected && !already_active {
                                     warn!("Loss Of Contact Confirmed");
+                                    // Record as a fault, but do NOT trigger safety interlock
+                                    let _ = fault_tx_network.send(fault_management::FaultEvent {
+                                        timestamp:        Utc::now(),
+                                        fault_type:       fault_management::FaultType::CommunicationLoss,
+                                        severity:         fault_management::Severity::High,
+                                        description:      "Loss of contact confirmed (consecutive timeouts)".to_string(),
+                                        affected_systems: vec!["network".into()],
+                                    }).await;
                                 }
                                 tokio::time::sleep(Duration::from_millis(20)).await;
                                 continue;
@@ -789,50 +797,8 @@ impl GroundControlSystem {
                         };
 
                         for c in &cmds {
-                            let urgent    = (c.priority as u8) <= 1;
                             let issued_at = Utc::now();
                             pending_command_issued_at.lock().await.insert(c.command_id.clone(), issued_at);
- 
-                            // {
-                            //     let last_ts = last_telemetry_timestamp_t7.lock().await;
-                            //     if let Some(last_telemetry) = *last_ts {
-                            //         let latency = (issued_at - last_telemetry)
-                            //             .num_microseconds().unwrap_or(0) as f64 / 1000.0;
-                            //         if latency >= 0.0 && latency < 10_000.0 {
-                            //             let _ = performance_tx.send(PerformanceEvent {
-                            //                 timestamp: issued_at,
-                            //                 event_type: EventType::DispatchUplinkSample,
-                            //                 duration_ms: latency,
-                            //                 metadata: {
-                            //                     let mut m = std::collections::HashMap::new();
-                            //                     m.insert("command_id".into(), c.command_id.clone());
-                            //                     m.insert("latency_ms".into(), format!("{:.3}", latency));
-                            //                     m
-                            //                 },
-                            //             }).await;
-                            //         }
-                            //     }
-                            // }
- 
-                            // let _ = performance_tx.send(PerformanceEvent {
-                            //     timestamp: issued_at,
-                            //     event_type: if urgent {
-                            //         EventType::UrgentCommandDispatched
-                            //     } else {
-                            //         EventType::CommandDispatched
-                            //     },
-                            //     duration_ms: 0.0,
-                            //     metadata: {
-                            //         let mut m = std::collections::HashMap::new();
-                            //         m.insert("command_id".into(), c.command_id.clone());
-                            //         m.insert("command_type".into(), format_debug_enum(&c.command_type));
-                            //         m.insert("priority".into(), (c.priority as u8).to_string());
-                            //         m.insert("target_system".into(), format_debug_enum(&c.target_system));
-                            //         m.insert("is_urgent".into(), urgent.to_string());
-                            //         m.insert("tick".into(), tick.to_string());
-                            //         m
-                            //     },
-                            // }).await;
                         }
                     }
  
