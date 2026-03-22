@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::{info, warn, error, debug};
+use tracing::{info, warn, error};
 use chrono::Utc;
 use std::collections::HashMap;
 
@@ -97,8 +97,8 @@ pub async fn run_system_load_sampler(
 
         match monitor.sample_system_load().await {
             Ok(metrics) => {
-                debug!(
-                    "System load sample #{}: CPU={:.1}%, MEM={:.1}%, Load1={:.2}",
+                info!(
+                    "System Heartbeat #{}: CPU={:.1}%, MEM={:.1}%, Load1={:.2}",
                     collected_sample_count, metrics.cpu_percent, metrics.memory_percent, metrics.load1
                 );
 
@@ -117,7 +117,7 @@ pub async fn run_system_load_sampler(
                 };
 
                 {
-                    let mut tracker = performance_tracker.lock().await;
+                    let mut tracker: tokio::sync::MutexGuard<'_, PerformanceTracker> = performance_tracker.lock().await;
                     tracker.record_performance_event(system_health_event);
                 }
 

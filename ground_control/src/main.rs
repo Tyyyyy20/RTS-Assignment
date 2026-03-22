@@ -31,9 +31,6 @@ use shared_protocol::{Command, SensorType};
 // - B3.1/B3.5 + S4: telemetry fault intake and critical-alert handling via FaultManager.
 // - B4.1/B4.2/B4.3 + S6: performance events, system load sampling, and shutdown summary output.
 
-/// Handy: stringify any Debug-able enum for logs/metadata
-fn format_debug_enum<T: std::fmt::Debug>(value: &T) -> String { format!("{:?}", value) }
-
 /// Main Ground Control System state
 pub struct GroundControlSystem {
     network_manager: Arc<NetworkManager>,
@@ -629,7 +626,7 @@ impl GroundControlSystem {
                     }).await;
 
                     info!(
-                        "Health: pkts={} avg_proc={:.2}ms faults={} net_fail={}/{}",
+                        "Health: Packets ={}, Avg Processing Time={:.2}ms, Faults={}, Network Failures={}/{}",
                         stats.total_packets_received,
                         stats.avg_processing_time_ms,
                         stats.total_faults,
@@ -674,7 +671,6 @@ impl GroundControlSystem {
                 let mut severe_drift_sum_ms: f64 = 0.0;
                 let mut severe_drift_count: u64  = 0;
                 let mut severe_drift_max_ms: f64 = 0.0;
-                let mut last_reported_network_violations: u64  = 0;
                 let mut last_reported_deadline_violations: u64 = 0;
                 let mut last_reported_total_urgent: u64        = 0;
 
@@ -811,58 +807,21 @@ impl GroundControlSystem {
                         }
                     }
  
-                    {
-                        let sched = command_scheduler.lock().await;
-                        for w in sched.get_commands_approaching_deadline() {
-                            // queue_age_ms = time since enqueued_at — urgent commands sitting
-                            // in queue without being dispatched indicate scheduler backlog.
-                            if w.queue_age_ms > 10.0 {
-                                error!(
-                                    "URGENT COMMAND STALE: {} ({:?}) in queue {:.3}ms [Tick:{}]",
-                                    w.command_id, w.command_type, w.queue_age_ms, tick
-                                );
-                                let _ = performance_tx.send(PerformanceEvent {
-                                    timestamp: Utc::now(),
-                                    event_type: EventType::CommandDeadlineViolation,
-                                    duration_ms: w.queue_age_ms,
-                                    metadata: {
-                                        let mut m = std::collections::HashMap::new();
-                                        m.insert("command_id".into(), w.command_id.clone());
-                                        m.insert("command_type".into(), format_debug_enum(&w.command_type));
-                                        m.insert("priority".into(), (w.priority as u8).to_string());
-                                        m.insert("target_system".into(), format_debug_enum(&w.target_system));
-                                        m.insert("queue_age_ms".into(), format!("{:.3}", w.queue_age_ms));
-                                        m.insert("severity".into(), "stale_urgent".into());
-                                        m.insert("tick_precision".into(), "0.5ms".into());
-                                        m
-                                    },
-                                }).await;
-                            } else if w.queue_age_ms > 5.0 {
-                                warn!(
-                                    "Urgent Command Queue Age Warning: {} ({:?}) {:.3}ms [Tick:{}]",
-                                    w.command_id, w.command_type, w.queue_age_ms, tick
-                                );
-                            }
-                        }
-                    }
 
                     if tick % 10 == 0 {
                         let sched = command_scheduler.lock().await;
                         let rep = sched.get_unified_deadline_report();
-                        if rep.network_violations > 0 || rep.deadline_violations > 0 {
-                            let has_changed = rep.network_violations  != last_reported_network_violations
-                                || rep.deadline_violations != last_reported_deadline_violations
+                        if  rep.deadline_violations > 0 {
+                            let has_changed = rep.deadline_violations != last_reported_deadline_violations
                                 || rep.total_urgent_commands != last_reported_total_urgent;
 
                             if has_changed {
                                 warn!(
-                                    "Deadline Violations Snapshot: Net={}/{} Total={}/{} \
-                                     (Net {:.1}%, Overall {:.1}%)",
-                                    rep.network_violations, rep.total_urgent_commands,
-                                    rep.deadline_violations, rep.total_urgent_commands,
-                                    rep.network_adherence_rate, rep.adherence_rate
-                                );
-                                last_reported_network_violations  = rep.network_violations;
+                                "Deadline Violations Snapshot: {}/{} urgent commands violated \
+                                ({:.1}% adherence)",
+                                rep.deadline_violations, rep.total_urgent_commands,
+                                rep.adherence_rate
+                            );
                                 last_reported_deadline_violations = rep.deadline_violations;
                                 last_reported_total_urgent        = rep.total_urgent_commands;
                             }
@@ -886,13 +845,12 @@ impl GroundControlSystem {
                         let s   = command_scheduler.lock().await;
                         let rep = s.get_unified_deadline_report();
                         info!(
-                            "=== COMMAND SCHEDULER REPORT === Net<=2ms {:.1}% ({} OK / {} Urgent) \
-                             AvgNet {:.3}ms Overall {:.1}% Violations={} Trend={}",
-                            rep.network_adherence_rate,
-                            rep.total_urgent_commands - rep.network_violations,
+                            "=== COMMAND SCHEDULER REPORT === Adherence {:.1}% ({} OK / {} Urgent) \
+                            AvgSend {:.3}ms Violations={} Trend={}",
+                            rep.adherence_rate,
+                            rep.total_urgent_commands.saturating_sub(rep.deadline_violations),
                             rep.total_urgent_commands,
                             rep.avg_network_send_time,
-                            rep.adherence_rate,
                             rep.deadline_violations,
                             rep.performance_trend
                         );
@@ -1357,30 +1315,6 @@ async fn main() -> Result<()> {
         let perf_for_sampler = performance_tracker_handle.clone();
         tokio::spawn(async move {
             system_monitor::run_system_load_sampler(perf_for_sampler, 1000).await;
-        });
-    }
-
-    // Lightweight heartbeat
-    {
-        let perf_for_report = performance_tracker_handle.clone();
-        tokio::spawn(async move {
-            loop {
-                {
-                    let perf_tracker  = perf_for_report.lock().await;
-                    let current_stats = perf_tracker.snapshot_current_stats();
-                    tracing::info!(
-                        "SYSTEM LOAD HEARTBEAT: CPU {:.1}% (Avg {:.1}%, Peak {:.1}%) | \
-                         MEM {:.1}% (Avg {:.1}%) | Load1 {:.2}",
-                        current_stats.cpu_latest_percent,
-                        current_stats.cpu_avg_percent,
-                        current_stats.cpu_peak_percent,
-                        current_stats.mem_latest_percent,
-                        current_stats.mem_avg_percent,
-                        current_stats.load1_latest
-                    );
-                }
-                tokio::time::sleep(Duration::from_secs(10)).await;
-            }
         });
     }
 

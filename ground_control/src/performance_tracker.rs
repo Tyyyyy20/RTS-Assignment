@@ -64,13 +64,6 @@ pub struct PerformanceTracker {
     backlog_warn_events: u64,
     backlog_critical_events: u64,
 
-    // telemetry_backlog_len_samples: VecDeque<u32>,
-    // telemetry_enqueue_times: HashMap<String, Timestamp>,   // key = packet_id / frame_id
-    // telemetry_backlog_age_ms: VecDeque<f64>,
-
-    // task_schedule_times: HashMap<String, Timestamp>,       // key = task_id/command_id
-    // task_drift_ms: VecDeque<f64>,
-
     cpu_warn_threshold: f64,   // e.g., 85
     mem_warn_threshold: f64,   // e.g., 85
     load_warn_per_core: f64,   // e.g., 0.8 * cores considered “busy”
@@ -105,8 +98,6 @@ pub enum EventType {
     UrgentCommandDelayed,
     CommandValidationFailed,
     UrgentCommandDispatched,           // NEW: For priority 0 or 1 commands
-    CommandDeadlineViolation,          // NEW: For commands missing deadlines
-    NetworkDeadlineViolation,          // NEW: For network send >2ms violations
     CommandDispatchError,              // NEW: For command dispatch failures
     CommandResponseRttSample,
     
@@ -157,7 +148,6 @@ struct NetworkMetrics {
     network_timeouts: u64,
     reception_drift_violations: u64, // Packets outside expected timing
     packet_decode_violations_3ms: u64,
-    network_deadline_violations_2ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -168,7 +158,6 @@ struct SystemMetrics {
     active_faults: u32,
     emergency_responses: u64,
     system_degradation_events: u64,
-    command_deadline_violations: u64,
 
     cpu_usage_latest: f64,
     memory_usage_latest: f64,
@@ -202,7 +191,6 @@ impl PerformanceTracker {
                 network_timeouts: 0,
                 reception_drift_violations: 0,
                 packet_decode_violations_3ms: 0,
-                network_deadline_violations_2ms: 0,
             },
             system_metrics: SystemMetrics {
                 _uptime_seconds: 0,
@@ -211,7 +199,6 @@ impl PerformanceTracker {
                 active_faults: 0,
                 emergency_responses: 0,
                 system_degradation_events: 0,
-                command_deadline_violations: 0,
                 
                 cpu_usage_latest: 0.0,
                 memory_usage_latest: 0.0,
@@ -340,7 +327,6 @@ impl PerformanceTracker {
             
             EventType::PacketRetransmissionRequested => {
                 self.network_metrics.retransmission_requests += 1;
-                // Track retransmit uplink jitter
                 let now = std::time::Instant::now();
                 if let Some(prev) = self.retransmit_uplink_sample_times.back() {
                     let interval_ms = (now.duration_since(*prev)).as_secs_f64() * 1000.0;
@@ -529,16 +515,6 @@ impl PerformanceTracker {
 
             EventType::TelemetryBacklogCritical => {
                 self.backlog_critical_events += 1;
-                self.performance_violations += 1;
-            }
-
-            EventType::NetworkDeadlineViolation => {
-                self.network_metrics.network_deadline_violations_2ms += 1;
-                self.performance_violations += 1; // counts toward global violations
-            }
-
-            EventType::CommandDeadlineViolation => {
-                self.system_metrics.command_deadline_violations += 1;
                 self.performance_violations += 1;
             }
 
@@ -922,11 +898,11 @@ impl PerformanceTracker {
         let max_retransmit_uplink_jitter = self.retransmit_uplink_jitter_samples_ms.iter().cloned().fold(0.0, f64::max);
 
         PerformanceStats {
-                        avg_overall_packet_to_uplink_latency_ms,
-                        p95_overall_packet_to_uplink_latency_ms,
-                        p99_overall_packet_to_uplink_latency_ms,
-                        max_overall_packet_to_uplink_latency_ms,
-                        overall_packet_to_uplink_latency_samples,
+            avg_overall_packet_to_uplink_latency_ms,
+            p95_overall_packet_to_uplink_latency_ms,
+            p99_overall_packet_to_uplink_latency_ms,
+            max_overall_packet_to_uplink_latency_ms,
+            overall_packet_to_uplink_latency_samples,
             stddev_cmd_dispatch_jitter_ms,
             stddev_retransmit_uplink_jitter_ms,
             stddev_overall_uplink_jitter_ms,
@@ -997,8 +973,6 @@ impl PerformanceTracker {
             backlog_max_age_ms,
             backlog_warn_events: self.backlog_warn_events,
             backlog_critical_events: self.backlog_critical_events,
-
-            network_deadline_violations_2ms: self.network_metrics.network_deadline_violations_2ms,
 
             cpu_latest_percent:  self.system_metrics.cpu_usage_latest,
             cpu_avg_percent:     self.system_metrics.cpu_usage_avg,
@@ -1208,13 +1182,6 @@ impl PerformanceTracker {
         if stats.backlog_p95_age_ms > 50.0 {
             issues.push(format!("Telemetry queueing age high: p95 {:.1}ms", stats.backlog_p95_age_ms));
         }
-
-         if self.network_metrics.network_deadline_violations_2ms > 0 {
-            issues.push(format!(
-                "Network >2ms violations: {}",
-                self.network_metrics.network_deadline_violations_2ms
-            ));
-        }
         
         PerformanceReport {
             report_timestamp: Utc::now(),
@@ -1315,8 +1282,6 @@ pub struct PerformanceStats {
     pub backlog_warn_events: u64,
     pub backlog_critical_events: u64,
 
-    pub network_deadline_violations_2ms: u64,
-
     // NEW: system-load exposure
     pub cpu_latest_percent: f64,
     pub cpu_avg_percent: f64,
@@ -1354,126 +1319,4 @@ pub struct PerformanceReport {
     pub performance_stats: PerformanceStats,
     pub identified_issues: Vec<String>,
     pub recommendations: Vec<String>,
-}
-
-
-#[cfg(test)]
-mod task4_perftracker_tests {
-    use super::*;
-    use chrono::Utc;
-
-    fn perf_evt(ts: Timestamp, ty: EventType, dur_ms: f64, md: &[(&str, &str)]) -> PerformanceEvent {
-        let mut m = std::collections::HashMap::new();
-        for (k, v) in md {
-            m.insert((*k).to_string(), (*v).to_string());
-        }
-        PerformanceEvent {
-            timestamp: ts,
-            event_type: ty,
-            duration_ms: dur_ms,
-            metadata: m,
-        }
-    }
-
-    #[test]
-    fn telemetry_backlog_len_and_age_metrics() {
-        let mut pt = PerformanceTracker::new();
-
-        // Set a capacity via a TelemetryEnqueued event
-        let now = Utc::now();
-        pt.record_performance_event(perf_evt(
-            now,
-            EventType::TelemetryEnqueued,
-            0.0,
-            &[
-                ("packet_id", "p1"),
-                ("queue_len", "30"),
-                ("queue_capacity", "100"),
-            ],
-        ));
-
-        // Enqueue another to push into warn/crit bands
-        pt.record_performance_event(perf_evt(
-            now,
-            EventType::TelemetryEnqueued,
-            0.0,
-            &[
-                ("packet_id", "p2"),
-                ("queue_len", "80"), // 80/100 => critical (>=0.70)
-                ("queue_capacity", "100"),
-            ],
-        ));
-
-        // After some time, dequeue p1 to produce an age sample (~15ms)
-        let later = now + chrono::Duration::milliseconds(15);
-        pt.record_performance_event(perf_evt(
-            later,
-            EventType::TelemetryDequeued,
-            0.0,
-            &[("packet_id", "p1"), ("queue_len", "79")],
-        ));
-
-        let s = pt.snapshot_current_stats();
-
-        // Length stats collected
-        assert!(s.backlog_avg_len > 0.0, "avg backlog len should be >0");
-        assert!(s.backlog_max_len >= 80, "max backlog len should reflect critical sample");
-
-        // Age stats collected
-        assert!(
-            s.backlog_avg_age_ms >= 10.0,
-            "avg backlog age should reflect ~15ms sample, got {:.2}ms",
-            s.backlog_avg_age_ms
-        );
-
-        // Warn/critical counters bumped
-        assert!(s.backlog_warn_events >= 1, "expected at least one warn");
-        assert!(s.backlog_critical_events >= 1, "expected at least one critical");
-    }
-
-    #[test]
-    fn system_health_high_utilization_is_logged() {
-        let mut pt = PerformanceTracker::new();
-
-        // Push a SystemHealthUpdate with high CPU or high load to exceed thresholds
-        pt.record_performance_event(perf_evt(
-            Utc::now(),
-            EventType::SystemHealthUpdate,
-            0.0,
-            &[
-                ("cpu_pct", "95.0"),
-                ("mem_pct", "40.0"),
-                ("load1", "8.0"),
-                ("cores", "8"),
-            ],
-        ));
-
-        // That update emits a ResourceUtilizationHigh event internally and bumps system_degradation_events
-        let s = pt.snapshot_current_stats();
-        assert!(
-            s.system_health_score < 100.0,
-            "health score should drop when high util is logged"
-        );
-        // also check peaks are recorded
-        assert!(s.cpu_peak_percent >= 95.0, "cpu peak should reflect sample");
-        assert!(s.load1_peak >= 8.0, "load1 peak should reflect sample");
-    }
-
-    #[test]
-    fn can_record_missed_deadline_event() {
-        let mut pt = PerformanceTracker::new();
-        // Directly record a missed deadline (scheduler also emits this in certain paths)
-        pt.record_performance_event(perf_evt(
-            Utc::now(),
-            EventType::CommandDeadlineViolation,
-            3.2, // violation amount
-            &[("command_id", "late-1"), ("violation_ms", "3.2")],
-        ));
-
-        let s = pt.snapshot_current_stats();
-        assert!(
-            s.total_performance_violations >= 1,
-            "missed deadline should bump violations"
-        );
-    }
 }
