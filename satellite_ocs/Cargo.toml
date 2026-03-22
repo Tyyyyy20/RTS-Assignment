@@ -44,10 +44,3 @@ hex = "0.4.3"
 fault-injection = "1.0.10"
 [dev-dependencies]
 proptest = "1.0"  # Property-based testing
-
-[[bench]]
-name = "scheduler"
-harness = false
-
-
-
