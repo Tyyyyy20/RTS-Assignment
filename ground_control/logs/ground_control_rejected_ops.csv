@@ -1,4 +1,0 @@
-ts,command_id,command_type,target_system,blocking_interlock_id,fault_id,fault_to_interlock_ms,interlock_to_block_ms,total_latency_ms
-2026-03-21T16:39:20.123817700+00:00,4a7940a3-686b-4e83-b866-eb41ce6eaff6,cpu_intensive_tasks,thermal_management,emergency_comm_loss,NetworkError_4bd6d7f5f2fd1f1c,1.619,85.614,87.233
-2026-03-21T16:39:20.313350200+00:00,1940e0be-dcfc-4aa1-8c7d-bf2ce46ebae7,cpu_intensive_tasks,power_management,emergency_comm_loss,NetworkError_4bd6d7f5f2fd1f1c,4.402,184.897,189.299
-2026-03-21T16:39:20.519323900+00:00,a5549aa7-e479-4657-b5f4-a8af8091fafd,cpu_intensive_tasks,attitude_control,emergency_comm_loss,NetworkError_4bd6d7f5f2fd1f1c,4.402,390.066,394.468

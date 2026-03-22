@@ -32,6 +32,7 @@ async fn main() -> Result<()> {
 
     // -------- config + crypto ----------
     let cfg = config::Cli::parse_and_build_config()?;
+    let start_time = chrono::Utc::now();
     let crypto = crypto::Crypto::from_config(&cfg)?;
     info!(?cfg, "Satellite OCS starting");
 
@@ -86,6 +87,8 @@ async fn main() -> Result<()> {
     if let Err(e) = tokio::signal::ctrl_c().await {
         warn!(?e, "failed to install Ctrl+C handler");
     }
-    info!("shutdown signal received; exiting.");
+    info!("shutdown signal received; generating final summary...");
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    crate::logging::metrics::print_final_summary(start_time).await;
     Ok(())
 }
