@@ -14,6 +14,7 @@ static SCHED: OnceCell<Arc<Mutex<BufWriter<tokio::fs::File>>>> = OnceCell::const
 static CPU: OnceCell<Arc<Mutex<BufWriter<tokio::fs::File>>>> = OnceCell::const_new();
 static DOWNLINK: OnceCell<Arc<Mutex<BufWriter<tokio::fs::File>>>> = OnceCell::const_new();
 static FAULTS: OnceCell<Arc<Mutex<BufWriter<tokio::fs::File>>>> = OnceCell::const_new();
+static CMD_LAT: OnceCell<Arc<Mutex<BufWriter<tokio::fs::File>>>> = OnceCell::const_new();
 
 async fn ensure_dir() {
     // Ensure the logs directory exists before writing files
@@ -228,4 +229,18 @@ pub async fn log_tx_queue(oldest_ms: f64, fill_pct: f64) {
     let csv_line = format!("{ts},{oldest_ms:.3},{fill_pct:.1}\n");
     let mut writer = file().await.lock().await;
     let _ = writer.write_all(csv_line.as_bytes()).await;
+}
+
+/// command_latency.csv: logs command processing latency
+/// ts,command_id,latency_ms
+pub async fn log_command_latency(cmd_id: &str, latency_ms: f64) {
+    let log_file = get_file(
+        &CMD_LAT,
+        "logs/command_latency.csv",
+        "ts,command_id,latency_ms\n",
+    ).await;
+    let mut log_writer = log_file.lock().await;
+    let ts = Utc::now().to_rfc3339();
+    let _ = log_writer.write_all(format!("{ts},{cmd_id},{latency_ms:.3}\n").as_bytes()).await;
+    let _ = log_writer.flush().await;
 }

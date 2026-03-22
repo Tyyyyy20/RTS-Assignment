@@ -33,6 +33,9 @@ pub async fn spawn_receiver(
         loop {
             match rx_sock.recv_from(&mut buf).await {
                 Ok((n, _from)) => {
+                    // --- START TIMER ---
+                    let start_time = std::time::Instant::now();
+
                     // Remove transport framing and extract a valid protocol frame
                     match framer.deframe(&buf[..n]) {
                         // Decrypt communication packet
@@ -58,6 +61,10 @@ pub async fn spawn_receiver(
                                     };
                                     if let Err(e) = send_ack(tx_sock.as_ref(), &crypto, ack_recv).await {
                                         warn!(?e, "failed to send 'received' ack");
+                                    } else {
+                                        // --- LOG LATENCY AFTER SUCCESSFUL ACK ---
+                                        let lat_ms = start_time.elapsed().as_secs_f64() * 1000.0;
+                                        crate::logging::csv::log_command_latency(&cmd.command_id, lat_ms).await;
                                     }
 
                                     // TODO: schedule/execute → send 'executing' and 'completed' ACKs

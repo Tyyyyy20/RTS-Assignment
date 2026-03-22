@@ -148,6 +148,7 @@ pub async fn print_final_summary(start_time: DateTime<Utc>) {
     let mut dl_intervals = Stats::default();
     let mut dl_missed_windows = 0;
     let mut last_sent_ts: Option<DateTime<Utc>> = None;
+    let mut cmd_latency = Stats::default();
 
     if let Ok(file) = File::open("logs/txqueue.csv") {
         for line in BufReader::new(file).lines().skip(1).flatten() {
@@ -181,6 +182,18 @@ pub async fn print_final_summary(start_time: DateTime<Utc>) {
                     }
                 } else if event == "missed_init_or_timeout" {
                     dl_missed_windows += 1;
+                }
+            }
+        }
+    }
+
+    // --- Parse Command-Response Latency ---
+    if let Ok(file) = File::open("logs/command_latency.csv") {
+        for line in BufReader::new(file).lines().skip(1).flatten() {
+            let parts: Vec<&str> = line.split(',').collect();
+            if parts.len() >= 3 {
+                if let Ok(ms) = parts[2].parse::<f64>() {
+                    cmd_latency.push(ms);
                 }
             }
         }
@@ -271,6 +284,7 @@ pub async fn print_final_summary(start_time: DateTime<Utc>) {
     info!("Downlink Latency (ms): {}", dl_latency.format_stats());
     info!("Downlink Jitter (ms): {}", dl_intervals.format_stats());
     info!("Missed Windows: {}", dl_missed_windows);
+    info!("Internal Command Latency (ms): {}", cmd_latency.format_stats());
     info!("");
 
     info!("5. System Health & Load");
