@@ -689,11 +689,10 @@ impl GroundControlSystem {
                     // Periodically inject an urgent command, rotating among types
                     if last_urgent_inject.elapsed() >= urgent_interval {
                         let urgent_cmd = match urgent_rotation % 5 {
-                            0 => Command::thermal_critical_response(1, 85.0),
-                            1 => Command::thermal_emergency_response(1, 90.0),
-                            2 => Command::power_critical_response(2, 10.0),
-                            3 => Command::attitude_critical_response(3, 15.0),
-                            4 => Command::enter_safe_mode(vec![1, 2, 3]),
+                            0 => Command::thermal_critical_response(1, 90.0),
+                            1 => Command::power_critical_response(2, 10.0),
+                            2 => Command::attitude_critical_response(3, 15.0),
+                            3 => Command::enter_safe_mode(vec![1, 2, 3]),
                             _ => Command::thermal_critical_response(1, 85.0), // fallback
                         };
                         urgent_rotation = urgent_rotation.wrapping_add(1);
@@ -815,35 +814,33 @@ impl GroundControlSystem {
                     {
                         let sched = command_scheduler.lock().await;
                         for w in sched.get_commands_approaching_deadline() {
-                            if w.time_to_deadline_ms < 0.1 {
+                            // queue_age_ms = time since enqueued_at — urgent commands sitting
+                            // in queue without being dispatched indicate scheduler backlog.
+                            if w.queue_age_ms > 10.0 {
                                 error!(
-                                    "DEADLINE CRITICAL: {} ({:?}) {:.3}ms Remaining [Tick:{}]",
-                                    w.command_id, w.command_type, w.time_to_deadline_ms, tick
+                                    "URGENT COMMAND STALE: {} ({:?}) in queue {:.3}ms [Tick:{}]",
+                                    w.command_id, w.command_type, w.queue_age_ms, tick
                                 );
                                 let _ = performance_tx.send(PerformanceEvent {
                                     timestamp: Utc::now(),
                                     event_type: EventType::CommandDeadlineViolation,
-                                    duration_ms: w.time_to_deadline_ms.abs(),
+                                    duration_ms: w.queue_age_ms,
                                     metadata: {
                                         let mut m = std::collections::HashMap::new();
                                         m.insert("command_id".into(), w.command_id.clone());
                                         m.insert("command_type".into(), format_debug_enum(&w.command_type));
                                         m.insert("priority".into(), (w.priority as u8).to_string());
                                         m.insert("target_system".into(), format_debug_enum(&w.target_system));
-                                        m.insert("severity".into(), "critical_emergency".into());
+                                        m.insert("queue_age_ms".into(), format!("{:.3}", w.queue_age_ms));
+                                        m.insert("severity".into(), "stale_urgent".into());
                                         m.insert("tick_precision".into(), "0.5ms".into());
                                         m
                                     },
                                 }).await;
-                            } else if w.time_to_deadline_ms < 0.5 {
-                                error!(
-                                    "DEADLINE URGENT: {} ({:?}) {:.3}ms Remaining [Tick:{}]",
-                                    w.command_id, w.command_type, w.time_to_deadline_ms, tick
-                                );
-                            } else if w.time_to_deadline_ms < 1.0 {
+                            } else if w.queue_age_ms > 5.0 {
                                 warn!(
-                                    "Deadline Proximity Alert: {} ({:?}) {:.3}ms Remaining [Tick:{}]",
-                                    w.command_id, w.command_type, w.time_to_deadline_ms, tick
+                                    "Urgent Command Queue Age Warning: {} ({:?}) {:.3}ms [Tick:{}]",
+                                    w.command_id, w.command_type, w.queue_age_ms, tick
                                 );
                             }
                         }
@@ -1055,7 +1052,6 @@ impl GroundControlSystem {
         sched.schedule_command(Command::thermal_normal_operation(1))?;
         sched.schedule_command(Command::thermal_warning_response(1, 80.0))?;
         sched.schedule_command(Command::thermal_critical_response(1, 90.0))?;
-        sched.schedule_command(Command::thermal_emergency_response(1, 95.0))?;
 
         // POWER
         sched.schedule_command(Command::power_normal_operation(2))?;

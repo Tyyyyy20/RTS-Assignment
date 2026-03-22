@@ -354,7 +354,6 @@ pub struct Command {
 
     // Timing
     pub timestamp: Timestamp,
-    pub deadline: Option<Timestamp>,
     pub retry_count: u8,
 
     // Params
@@ -381,7 +380,6 @@ impl Command {
             description: format!("Set thermal sensor {} to nominal mode", sensor_id),
             target_system: TargetSystem::ThermalManagement,
             timestamp: Utc::now(),
-            deadline: Some(Utc::now() + chrono::Duration::seconds(10)),
             retry_count: 0,
             param1: sensor_id as f64,
             param2: 50.0, // 20Hz
@@ -408,7 +406,6 @@ impl Command {
             ),
             target_system: TargetSystem::ThermalManagement,
             timestamp: Utc::now(),
-            deadline: Some(Utc::now() + chrono::Duration::seconds(5)),
             retry_count: 0,
             param1: sensor_id as f64,
             param2: 25.0,  // 40Hz
@@ -436,7 +433,6 @@ impl Command {
             ),
             target_system: TargetSystem::ThermalManagement,
             timestamp: Utc::now(),
-            deadline: Some(Utc::now() + chrono::Duration::milliseconds(500)),
             retry_count: 0,
             param1: sensor_id as f64,
             param2: 10.0,  // 100Hz
@@ -450,33 +446,6 @@ impl Command {
         }
     }
 
-    pub fn thermal_emergency_response(sensor_id: u32, temperature: f64) -> Self {
-        let mut metadata = HashMap::new();
-        metadata.insert("trigger_temp".into(), temperature.to_string());
-        metadata.insert("shutdown_non_essential".into(), "true".into());
-        metadata.insert("maintain_life_support".into(), "true".into());
-        Self {
-            command_id: Uuid::new_v4().to_string(),
-            command_type: CommandType::Emergency,
-            description: format!(
-                "EMERGENCY: thermal shutdown command for sensor {} at {}°C",
-                sensor_id, temperature
-            ),
-            target_system: TargetSystem::AllSystems,
-            timestamp: Utc::now(),
-            deadline: Some(Utc::now() + chrono::Duration::milliseconds(100)),
-            retry_count: 0,
-            param1: sensor_id as f64,
-            param2: 5.0,   // 200Hz sampling (monitoring)
-            param3: 100.0, // fan %
-            param4: Priority::Emergency as u8 as f64,
-            text_param: "THERMAL_EMERGENCY".to_string(),
-            priority: Priority::Emergency,
-            source: Source::GroundControl,
-            destination: Source::Satellite,
-            metadata,
-        }
-    }
 
     // --------------------------- POWER -------------------------------------
     pub fn power_normal_operation(sensor_id: u32) -> Self {
@@ -486,7 +455,6 @@ impl Command {
             description: format!("Set power sensor {} to nominal mode", sensor_id),
             target_system: TargetSystem::PowerManagement,
             timestamp: Utc::now(),
-            deadline: Some(Utc::now() + chrono::Duration::seconds(10)),
             retry_count: 0,
             param1: sensor_id as f64,
             param2: 100.0, // 10Hz
@@ -514,7 +482,6 @@ impl Command {
             ),
             target_system: TargetSystem::PowerManagement,
             timestamp: Utc::now(),
-            deadline: Some(Utc::now() + chrono::Duration::seconds(2)),
             retry_count: 0,
             param1: sensor_id as f64,
             param2: 50.0,  // 20Hz
@@ -542,7 +509,6 @@ impl Command {
             ),
             target_system: TargetSystem::PowerManagement,
             timestamp: Utc::now(),
-            deadline: Some(Utc::now() + chrono::Duration::milliseconds(500)),
             retry_count: 0,
             param1: sensor_id as f64,
             param2: 25.0, // 40Hz
@@ -564,7 +530,6 @@ impl Command {
             description: format!("Set attitude sensor {} to nominal mode", sensor_id),
             target_system: TargetSystem::AttitudeControl,
             timestamp: Utc::now(),
-            deadline: Some(Utc::now() + chrono::Duration::seconds(10)),
             retry_count: 0,
             param1: sensor_id as f64,
             param2: 200.0, // 5Hz
@@ -591,7 +556,6 @@ impl Command {
             ),
             target_system: TargetSystem::AttitudeControl,
             timestamp: Utc::now(),
-            deadline: Some(Utc::now() + chrono::Duration::seconds(1)),
             retry_count: 0,
             param1: sensor_id as f64,
             param2: 100.0, // 10Hz
@@ -619,7 +583,6 @@ impl Command {
             ),
             target_system: TargetSystem::AttitudeControl,
             timestamp: Utc::now(),
-            deadline: Some(Utc::now() + chrono::Duration::milliseconds(200)),
             retry_count: 0,
             param1: sensor_id as f64,
             param2: 50.0,  // 20Hz
@@ -651,14 +614,13 @@ impl Command {
                 SensorType::Attitude => TargetSystem::AttitudeControl,
             },
             timestamp: Utc::now(),
-            deadline: Some(Utc::now() + chrono::Duration::seconds(5)),
             retry_count: 0,
             param1: sensor_id as f64,
             param2: 1.0, // re-request flag
             param3: 0.0,
-            param4: Priority::Important as u8 as f64,
+            param4: Priority::Normal as u8 as f64,
             text_param: "RE_REQUEST_DATA".to_string(),
-            priority: Priority::Important,
+            priority: Priority::Normal,
             source: Source::GroundControl,
             destination: Source::Satellite,
             metadata,
@@ -683,7 +645,6 @@ impl Command {
             description: "Enter safe mode due to multiple sensor alerts".to_string(),
             target_system: TargetSystem::AllSystems,
             timestamp: Utc::now(),
-            deadline: Some(Utc::now() + chrono::Duration::milliseconds(500)),
             retry_count: 0,
             param1: triggered_sensors.len() as f64,
             param2: 1.0,  // enable safe mode
@@ -707,14 +668,13 @@ impl Command {
             description: "Begin structured recovery from emergency state".to_string(),
             target_system: TargetSystem::AllSystems,
             timestamp: Utc::now(),
-            deadline: Some(Utc::now() + chrono::Duration::seconds(30)),
             retry_count: 0,
             param1: 1.0,  // phase
             param2: 60.0, // timeout
             param3: 1.0,  // gradual restore
-            param4: Priority::Critical as u8 as f64,
+            param4: Priority::Normal as u8 as f64,
             text_param: "RECOVERY_MODE".to_string(),
-            priority: Priority::Critical,
+            priority: Priority::Normal,
             source: Source::GroundControl,
             destination: Source::Satellite,
             metadata,
@@ -735,14 +695,13 @@ impl Command {
                 SensorType::Attitude => TargetSystem::AttitudeControl,
             },
             timestamp: Utc::now(),
-            deadline: Some(Utc::now() + chrono::Duration::seconds(30)),
             retry_count: 0,
             param1: sensor_id as f64,
             param2: 1.0,  // enable
             param3: 10.0, // seconds
-            param4: Priority::Important as u8 as f64,
+            param4: Priority::Normal as u8 as f64,
             text_param: "SELF_TEST".to_string(),
-            priority: Priority::Important,
+            priority: Priority::Normal,
             source: Source::GroundControl,
             destination: Source::Satellite,
             metadata,
@@ -763,14 +722,13 @@ impl Command {
                 SensorType::Attitude => TargetSystem::AttitudeControl,
             },
             timestamp: Utc::now(),
-            deadline: Some(Utc::now() + chrono::Duration::minutes(5)),
             retry_count: 0,
             param1: sensor_id as f64,
             param2: 1.0,  // enable
             param3: 60.0, // timeout
-            param4: Priority::Important as u8 as f64,
+            param4: Priority::Normal as u8 as f64,
             text_param: "RECALIBRATE".to_string(),
-            priority: Priority::Important,
+            priority: Priority::Normal,
             source: Source::GroundControl,
             destination: Source::Satellite,
             metadata,
