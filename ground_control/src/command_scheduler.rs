@@ -422,8 +422,6 @@ impl CommandScheduler {
                 }
             }
 
-            // We'll emit the combined latency after the network send below
-
             // ── Network send ──────────────────────────────────────────────
             let send_result = network
                 .send_packet_with_deadline_guard(

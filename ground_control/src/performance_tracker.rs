@@ -257,15 +257,6 @@ impl PerformanceTracker {
 
             backlog_warn_events: 0,
             backlog_critical_events: 0,
-
-            // uplink_jitter_ms: 0.0,
-            // uplink_interarrival_ms: VecDeque::new(),
-            // telemetry_backlog_len_samples: VecDeque::new(),
-            // telemetry_enqueue_times: HashMap::new(),
-            // telemetry_backlog_age_ms: VecDeque::new(),
-            // task_schedule_times: HashMap::new(),
-            // task_drift_ms: VecDeque::new(),
-
             cpu_warn_threshold: 85.0,
             mem_warn_threshold: 85.0,
             load_warn_per_core: 0.8,

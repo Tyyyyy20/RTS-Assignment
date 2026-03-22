@@ -292,7 +292,6 @@ impl GroundControlSystem {
                                 }).await;
                                 if loss_detected && !already_active {
                                     warn!("Loss Of Contact Confirmed");
-                                    // Record as a fault, but do NOT trigger safety interlock
                                     let _ = fault_tx_network.send(fault_management::FaultEvent {
                                         timestamp:        Utc::now(),
                                         fault_type:       fault_management::FaultType::CommunicationLoss,
@@ -1038,14 +1037,6 @@ impl GroundControlSystem {
         Ok(())
     }
 
-    // pub async fn schedule_emergency_deadline_test(&self) -> Result<String> {
-    //     let mut scheduler = self.command_scheduler.lock().await;
-    //     let emergency_command = shared_protocol::Command::thermal_emergency_response(1, 95.0);
-    //     let scheduled_command_id = scheduler.schedule_command(emergency_command)?;
-    //     info!("Emergency Command Scheduled For Deadline Validation: {scheduled_command_id}");
-    //     Ok(scheduled_command_id)
-    // }
-
     /// Seed the real-time schedule with the initial command set for this session.
     ///
     /// Called once immediately before the task loop starts. Commands are staggered
@@ -1251,8 +1242,9 @@ impl GroundControlSystem {
             final_stats.backlog_critical_events
         );
         info!(
-            "Faults Scenarios Handled: {} | Active Faults: {} | Active Critical Faults: {}",
-            fault_stats.total_faults_detected,
+            "Faults Received: {} | Communication/Network Loss Events: {} | Active Faults: {} | Active Critical Faults: {}",
+            fault_stats.total_faults_detected - u64::from(fault_stats.loc_events),
+            fault_stats.loc_events,
             fault_stats.active_faults_count,
             fault_stats.active_critical_faults
         );

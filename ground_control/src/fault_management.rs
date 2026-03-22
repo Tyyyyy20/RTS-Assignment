@@ -387,7 +387,6 @@ impl FaultManager {
         );
 
         // Determine whether this fault crossed the critical ground alert threshold.
-        // This is the single place that decides the label for both CSVs.
         let is_critical_ground_alert = response_time > self.critical_response_time_ms;
 
         if is_critical_ground_alert {
@@ -414,7 +413,6 @@ impl FaultManager {
 
             response.auto_recovery_attempted = true;
 
-            // Always record a row in the critical alerts CSV for every critical alert, not just new faults
             Self::append_fault_recovery_csv_entry(
                 CRITICAL_ALERT_LOG_PATH,
                 "detected",
@@ -501,6 +499,8 @@ impl FaultManager {
         if self.consecutive_network_failures >= self.loss_of_contact_threshold {
             if self.loc_active_since.is_none() {
                 error!("LOSS OF CONTACT DETECTED - Consecutive Failures");
+                self.loc_active_since = Some(fault_event.timestamp);
+                self.loc_events += 1;
 
                 let interlock_id = "emergency_comm_loss".to_string();
                 self.activate_safety_interlock(
@@ -1182,7 +1182,7 @@ impl FaultManager {
     pub fn record_successful_communication(&mut self) {
         let prev = self.consecutive_network_failures;
         if prev > 0 {
-            info!("Communications Restored After Consecutive Failures");
+            info!("Communications Restored After Failure");
             self.consecutive_network_failures = 0;
         }
         self.last_successful_communication = Some(Utc::now());
