@@ -1274,7 +1274,6 @@ impl GroundControlSystem {
             fault_stats.mtbf_avg_ms
         );
 
-        let fault_manager = self.fault_manager.lock().await;
         let interlock_latency_samples = fault_manager.interlock_activation_latency_sample_count();
         info!(
             "Interlock Activation Latency: avg {:.3}ms (P95 {:.3}ms, P99 {:.3}ms, max {:.3}ms) from {} activations",
