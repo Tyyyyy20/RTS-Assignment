@@ -1172,6 +1172,7 @@ impl PerformanceTracker {
                 stats.backlog_p95_len, self.backlog_capacity
             ));
         }
+        
         if stats.backlog_p95_age_ms > 50.0 {
             issues.push(format!("Telemetry queueing age high: p95 {:.1}ms", stats.backlog_p95_age_ms));
         }
