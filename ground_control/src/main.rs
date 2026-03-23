@@ -1246,6 +1246,15 @@ impl GroundControlSystem {
             deadline_report.deadline_violations,
             deadline_report.total_urgent_commands
         );
+        info!(
+            "System Load: CPU avg {:.2}% (peak {:.2}%) | Mem avg {:.2}% (peak {:.2}%) | Load1 avg {:.2} (peak {:.2})",
+            final_stats.cpu_avg_percent,
+            final_stats.cpu_peak_percent,
+            final_stats.mem_avg_percent,
+            final_stats.mem_peak_percent,
+            final_stats.load1_avg,
+            final_stats.load1_peak
+        );
         info!("System Health Score: {:.1}/100 | Uptime {:.2}%", final_stats.system_health_score, final_stats.uptime_percentage);
 
         if final_report.identified_issues.is_empty() {

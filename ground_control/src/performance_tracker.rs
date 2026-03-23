@@ -565,7 +565,7 @@ impl PerformanceTracker {
                         // Optional: raise a high-utilization event so it’s logged with a timestamp
                         let load_warn = self.load_warn_per_core * (cores as f64);
                         if cpu >= self.cpu_warn_threshold || mem >= self.mem_warn_threshold || load1 >= load_warn {
-                            let mut md = std::collections::HashMap::new();
+                            let mut md: HashMap<String, String> = std::collections::HashMap::new();
                             md.insert("cpu_pct".into(), format!("{:.2}", cpu));
                             md.insert("mem_pct".into(), format!("{:.2}", mem));
                             md.insert("load1".into(),    format!("{:.2}", load1));

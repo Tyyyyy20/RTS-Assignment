@@ -268,7 +268,7 @@ impl CommandScheduler {
         perf_tx: Option<&mpsc::Sender<PerformanceEvent>>,
     ) -> Vec<Command> {
         // 1. Pending → ready.
-        self.promote_pending_commands(perf_tx).await;
+        self.promote_pending_commands().await;
 
         // 2. Released interlocks → requeue held commands.
         let released = fault_manager.drain_released_interlock_ids();
@@ -566,7 +566,6 @@ impl CommandScheduler {
     /// Emits SchedulerPrecisionViolation and TaskExecutionDrift for late promotions.
     async fn promote_pending_commands(
         &mut self,
-        perf_tx: Option<&mpsc::Sender<PerformanceEvent>>,
     ) {
         let now = Utc::now();
 
@@ -584,7 +583,6 @@ impl CommandScheduler {
                 .max(0) as f64
                 / 1000.0;
 
-            const PROMOTION_WARN_MS: f64 = 1.0;   // more than one tick late
             const PROMOTION_VIOLATION_MS: f64 = 5.0; // genuinely stale promotion
 
             if lateness_ms > PROMOTION_VIOLATION_MS {
@@ -594,39 +592,7 @@ impl CommandScheduler {
                     lateness_ms,
                     entry.scheduled_at.format("%H:%M:%S%.3f"),
                 );
-                if let Some(tx) = perf_tx {
-                    let _ = tx.send(PerformanceEvent {
-                        timestamp: now,
-                        event_type: EventType::SchedulerPrecisionViolation,
-                        duration_ms: lateness_ms,
-                        metadata: {
-                            let mut m = HashMap::new();
-                            m.insert("phase".into(), "promotion".into());
-                            m.insert("command_id".into(), entry.scheduled.command.command_id.clone());
-                            m.insert("lateness_ms".into(), format!("{:.3}", lateness_ms));
-                            m
-                        },
-                    }).await;
-                    let _ = tx.send(PerformanceEvent {
-                        timestamp: now,
-                        event_type: EventType::TaskExecutionDrift,
-                        duration_ms: lateness_ms,
-                        metadata: {
-                            let mut m = HashMap::new();
-                            m.insert("source".into(), "pending_promotion".into());
-                            m.insert("command_id".into(), entry.scheduled.command.command_id.clone());
-                            m
-                        },
-                    }).await;
-                }
-            } else if lateness_ms > PROMOTION_WARN_MS {
-                // normal OS jitter — just log at debug level, no event
-                warn!(
-                    "Command {} promoted {:.3}ms late (minor tick jitter)",
-                    entry.scheduled.command.command_id, lateness_ms
-                );
             }
-
             self.insert_into_dispatch_queue(entry.scheduled);
             self.commands_promoted += 1;
         }
