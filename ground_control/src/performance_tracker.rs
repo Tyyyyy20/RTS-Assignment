@@ -1166,13 +1166,6 @@ impl PerformanceTracker {
             recommendations.push("System performance degradation detected - review logs".to_string());
         }
 
-        if stats.p99_task_drift_ms > self.task_drift_warn_ms {
-            issues.push(format!(
-                "Scheduler drift high: p99 {:.2}ms (warn>{:.1}ms, crit>{:.1}ms)",
-                stats.p99_task_drift_ms, self.task_drift_warn_ms, self.task_drift_critical_ms
-            ));
-        }
-
         if stats.backlog_p95_len > (self.backlog_crit_ratio * self.backlog_capacity as f64) && self.backlog_capacity > 0 {
             issues.push(format!(
                 "Telemetry backlog very high: p95 len {:.0} / cap {}",
