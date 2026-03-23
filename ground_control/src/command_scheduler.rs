@@ -489,10 +489,7 @@ impl CommandScheduler {
     }
 
     // ── Pruning ───────────────────────────────────────────────────────────────
-
-    /// Remove stale commands from all three queue tiers.
-    /// Without deadline fields, staleness is defined as commands that have
-    /// been in the queue longer than 30 seconds without being dispatched.
+    // Prune because of staleness (interlock-held commands that have been waiting too long)
     pub async fn prune_expired_commands(&mut self) {
         let now = Utc::now();
         let stale_threshold_ms = 30_000i64; // 30 seconds
