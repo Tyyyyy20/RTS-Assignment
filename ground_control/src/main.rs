@@ -1196,7 +1196,7 @@ impl GroundControlSystem {
             final_stats.backlog_critical_events
         );
         info!(
-            "Faults Received: {} | Communication/Network Loss Events: {} | Active Faults: {} | Active Critical Faults: {}",
+            "Faults Scenarios Received: {} | Communication/Network Loss Events: {} | Active Faults: {} | Active Critical Faults: {}",
             fault_stats.total_faults_detected - u64::from(fault_stats.loc_events),
             fault_stats.loc_events,
             fault_stats.active_faults_count,
