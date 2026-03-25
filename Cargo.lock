@@ -882,6 +882,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "criterion",
  "hex",
  "num_cpus",
  "once_cell",

@@ -572,7 +572,7 @@ impl PerformanceTracker {
                             md.insert("cores".into(),    format!("{}", cores));
 
                             // This creates a separate, timestamped event in your history
-                            super::PerformanceTracker::record_performance_event(self, PerformanceEvent {
+                            self.record_performance_event(PerformanceEvent {
                                 timestamp: chrono::Utc::now(),
                                 event_type: EventType::ResourceUtilizationHigh,
                                 duration_ms: 0.0,

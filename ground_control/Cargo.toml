@@ -30,4 +30,9 @@ hex = "0.4"
 once_cell = "1.19"
 num_cpus = "1.16"
 
+[dev-dependencies]
+criterion = { version = "0.7.0", features = ["html_reports"] }
 
+[[bench]]
+name = "gcs_bench"
+harness = false
