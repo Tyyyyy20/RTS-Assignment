@@ -50,7 +50,6 @@ pub struct PerformanceTracker {
     retransmit_uplink_interarrival_ms: VecDeque<f64>,
 
     task_drift_ms: VecDeque<f64>,            // NEW
-    task_drift_warn_ms: f64,                 // NEW (optional)
     task_drift_critical_ms: f64,             // NEW (optional)
 
     telemetry_backlog_len_samples: VecDeque<u32>,          // number of itemns in telemetry queue
@@ -231,7 +230,6 @@ impl PerformanceTracker {
             retransmit_uplink_interarrival_ms: VecDeque::new(),
 
             task_drift_ms: VecDeque::new(),
-            task_drift_warn_ms: 2.0,       // warn at >2ms
             task_drift_critical_ms: 5.0,   // violation at >5ms
 
             telemetry_backlog_len_samples: VecDeque::new(),
