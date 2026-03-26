@@ -94,19 +94,7 @@ fn backlog_ages_ms(n: usize) -> Vec<f64> {
 // ═══════════════════════════════════════════════════════════════════════════════
 // BENCHMARK 1: Uplink Jitter
 //
-// Mirrors PerformanceTracker::record_performance_event() for two event types:
-//
-// CommandDispatchIntervalSample:
-//   reads "cmd_dispatch_interval_ms" and "cmd_dispatch_jitter_ms" from metadata,
-//   pushes into cmd_dispatch_interarrival_ms and cmd_dispatch_jitter_samples_ms,
-//   caps both at 1000 with pop_front.
-//   jitter formula: |interval_ms - 1.0|  (expected cadence = 1ms)
-//
-// PacketRetransmissionRequested:
-//   computes interval from last Instant in retransmit_uplink_sample_times,
-//   jitter formula: |interval_ms - 1.0|
-//   pushes into retransmit_uplink_jitter_samples_ms, caps at 1000.
-//   retransmit_uplink_sample_times keeps only the last 2 entries.
+// Mirrors PerformanceTracker::record_performance_event() 
 // ═══════════════════════════════════════════════════════════════════════════════
 
 fn bench_uplink_jitter(c: &mut Criterion) {
